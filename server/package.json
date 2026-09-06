@@ -1,0 +1,18 @@
+{
+  "name": "eternal-empire-pvp-server",
+  "version": "1.0.0",
+  "description": "永恒帝国：龙之纪元 - 实时对战 WebSocket 服务器",
+  "main": "pvp_server.js",
+  "scripts": {
+    "start": "node pvp_server.js",
+    "dev": "node pvp_server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["game", "pvp", "websocket", "eternal-empire"],
+  "license": "MIT"
+}
