@@ -1,0 +1,8 @@
+# 忽略开发测试文件
+test_pvp.js
+test.html
+index.js.backup
+glitch-ready.js
+deploy.sh
+启动服务器.bat
+*.md
