@@ -1,13 +1,6 @@
-[services]
+[[services]]
 name = "eternal-empire-pvp"
 rootDirectory = "./server"
 port = 3000
-
-[services.build]
 buildCommand = "npm install"
-
-[services.run]
-command = "node pvp_server.js"
-
-[build]
-buildCommand = "npm install"
+startCommand = "node pvp_server.js"
