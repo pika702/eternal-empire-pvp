@@ -174,7 +174,7 @@ function toast(msg){const t=document.getElementById('toast');const d=document.cr
 function report(title,pairs){let s=title;pairs.forEach(([k,v])=>{const num=typeof v==='number';s+='\n'+k+' '+(num?(v>=0?'+':'')+Math.round(v):v);});toast(s);}
 function log(msg){S.chron.unshift('【第'+S.year+'年·'+S.era+'】'+msg);if(S.chron.length>240)S.chron.pop();}
 function showModal(title,html){document.getElementById('modalBox').innerHTML='<h3>'+title+'</h3>'+html+'<div style="margin-top:12px;text-align:right"><button class="btn" onclick="closeModal()">关闭</button></div>';document.getElementById('modal').classList.add('show');}
-function closeModal(){document.getElementById('modal').classList.remove('show');}
+function closeModal(){document.getElementById('modal').classList.remove('show');console.log('closeModal called, S exists:', !!S);if(S){try{renderAll();console.log('renderAll completed');}catch(e){console.error('renderAll failed:', e);}}}
 function saveDef(){if(S&&S.settings)saveGame();}
 
 /* ---------- 1) 静态数据 ---------- */
@@ -308,7 +308,7 @@ function newGame(key,diffKey,seedIn){
     morale:50, powerBonus:0, growth:0.03,
     armies:{me:d.armies},
     mods:{income:0,admin:0,build:0,foodG:0,talent:0,diplo:0,armyCap:0,atk:0,def:0,corrupt:0,tech:0,heartCap:0,genLead:0},
-    apMax:16, ap:16, // 第十二轮回调：行动点 18→16（恢复治理取舍，收紧"钱太好赚"，仍比初版15宽松）
+    apMax:15, ap:15, // 第八轮：行动点上限 15，满足第 8 回合 8 点门槛，每载入重置、不累积
     limits:{}, gen:1, bonusDraw:0, rival:null, _collectWon:0,
     officials:[], concubines:[], princes:[], heir:null, queen:null,
     treasures:3, debt:0, debtTurns:0, emerg:{}, cut:false, dead:0, _won:0,
@@ -1555,7 +1555,7 @@ function dismissOfficial(id){const o=S.officials.find(x=>x.id===id);if(!o)return
 /* =================== 扩展系统 v2（攻城 / 兵力 / 引导 / 存档 / 事件 / 亡国） =================== */
 /* —— 新手引导（前3载入） —— */
 const TUT_STEPS=[
- {tab:'court',t:'👑 开国前三载，朕为你引路',b:'点右下「下一载入 ▶」推进时间；每载入 18 行动点，可治理六部、抽策、征税。多数行动<b>每载入限 1 次</b>，点数主要花在攻城推进、后宫、培养子嗣等可重复行动上；行动失败（如国库不足）不扣行动点，放心尝试。'},
+ {tab:'court',t:'👑 开国前三载，朕为你引路',b:'点右下「下一载入 ▶」推进时间；每载入 15 行动点，可治理六部、抽策、征税。多数行动<b>每载入限 1 次</b>，点数主要花在攻城推进、后宫、培养子嗣等可重复行动上；行动失败（如国库不足）不扣行动点，放心尝试。'},
  {tab:'sandbox',t:'⚔ 沙盘征战',b:'点己方城选出击基地，再点相邻敌城「出征」。攻城有进度条与随机事件：强攻快损兵多、围城省兵可粮尽、离间可劝降。名城有 🎖名将 坐镇，留意单挑与突围事件。'},
  {tab:'harem',t:'👑 开后宫、养子嗣',b:'选秀得妃嫔，探望有概率有孕；子嗣满10岁可培养（习文/习武/请名师/历练），成年皇子封王、公主联姻。妃子晋升到「妃」以上激活被动技能。'},
  {tab:'cards',t:'🃏 策略卡',b:'每载入可抽1张策卡，装备即永久生效，是变强的核心。多余卡可合成升级。'},
@@ -2236,30 +2236,73 @@ function updateDragonFx(){const d=document.getElementById('dragon');const on=S&&
 
 /* ---------- 12) 存档（localStorage 离线） ---------- */
 const SAVE_KEY='dragon_empire_save_v2';
-// 旧档迁移：补齐新系统字段 + 数值兜底（杜绝旧档 NaN）
+// 旧档迁移：补齐新系统字段 + 数值兜底（杜绝旧档 NaN / 黑屏）
 function migrateS(){if(!S)return;
+  const dft={era:'?',eraName:'?',key:'han',diff:'normal',year:1,age:18,deathAge:55,costK:1,aiK:1,
+    gold:50,food:0,pop:1000,heart:50,heartCap:100,heartBase:100,culture:0,rep:0,order:50,
+    corrupt:0.2,central:50,legit:50,fate:50,tech:0,morale:50,powerBonus:0,growth:0.03,
+    armies:{me:0},mods:{income:0,admin:0,build:0,foodG:0,talent:0,diplo:0,armyCap:0,atk:0,def:0,corrupt:0,tech:0,heartCap:0,genLead:0},
+    apMax:15,ap:15,limits:{},gen:1,bonusDraw:0,rival:null,_collectWon:0,
+    officials:[],concubines:[],princes:[],heir:null,queen:null,
+    treasures:3,debt:0,debtTurns:0,emerg:{},cut:false,dead:0,_won:0,
+    deck:[],warehouse:[],projects:{build:0,border:0,tech:0},laws:[],
+    nodes:[],edges:[],passes:[],forces:[],posts:{},weapons:null,chron:[],
+    seed:genSeed(),invite:genInvite(),taxes:1,lastTaxRate:-99,
+    trades:[],vassals:[],haremPeace:100,siege:null,cashIssueTurns:0,lastIssue:-99,
+    engines:{},engRes:null,starGens:[],defend:null,season:null,
+    garrison:{},nirvana:false,deathCause:null,firstDeathShare:false,tutDone:0,
+    settings:{bgmVol:50,sfxVol:60,gameSpeed:'normal',theme:'minghuang',fontSize:'中',fx:true,autosave:15,guide:true,econDiff:'标准'}};
+  Object.keys(dft).forEach(k=>{if(S[k]===undefined||S[k]===null)S[k]=dft[k];});
+  if(!S.armies||typeof S.armies!=='object')S.armies={me:0};
+  if(!S.mods||typeof S.mods!=='object')S.mods=dft.mods;
+  if(!S.projects||typeof S.projects!=='object')S.projects=dft.projects;
+  if(!S.posts||typeof S.posts!=='object')S.posts={};
+  if(!S.engines||typeof S.engines!=='object')S.engines={};
+  if(!S.garrison||typeof S.garrison!=='object')S.garrison={};
+  if(!S.emerg||typeof S.emerg!=='object')S.emerg={};
+  if(!Array.isArray(S.officials))S.officials=[];
+  if(!Array.isArray(S.concubines))S.concubines=[];
+  if(!Array.isArray(S.princes))S.princes=[];
+  if(!Array.isArray(S.deck))S.deck=[];
+  if(!Array.isArray(S.warehouse))S.warehouse=[];
+  if(!Array.isArray(S.nodes))S.nodes=[];
+  if(!Array.isArray(S.edges))S.edges=[];
+  if(!Array.isArray(S.passes))S.passes=[];
+  if(!Array.isArray(S.forces))S.forces=[];
+  if(!Array.isArray(S.laws))S.laws=[];
+  if(!Array.isArray(S.trades))S.trades=[];
+  if(!Array.isArray(S.vassals))S.vassals=[];
+  if(!Array.isArray(S.starGens))S.starGens=[];
+  if(!Array.isArray(S.chron))S.chron=[];
+  if(!S.settings||typeof S.settings!=='object')S.settings=dft.settings;
   S.taxes=S.taxes==null?1:S.taxes;S.lastTaxRate=S.lastTaxRate==null?-99:S.lastTaxRate;
-  S.trades=S.trades||[];S.haremPeace=S.haremPeace==null?100:safe(S.haremPeace,100);
-  S.garrison=S.garrison||{};S.cashIssueTurns=S.cashIssueTurns||0;S.lastIssue=S.lastIssue==null?-99:S.lastIssue;
+  S.haremPeace=S.haremPeace==null?100:safe(S.haremPeace,100);
+  S.cashIssueTurns=S.cashIssueTurns||0;S.lastIssue=S.lastIssue==null?-99:S.lastIssue;
   // 攻城器械 + 守城名将（旧档补齐）
-  S.engines=S.engines||{};if(S.engRes===undefined)S.engRes=null;
-  if(!S.starGens||!S.starGens.length){S.starGens=[];
-    S.forces.forEach(f=>{if(f.id==='me')return;const own=S.nodes.filter(n=>n.owner===f.id&&!S.starGens.some(x=>x.city===n.id));if(!own.length)return;
-      const c=own.slice().sort((a,b)=>((b.pass?1:0)-(a.pass?1:0))||(safe(b.def,10)-safe(a.def,10)))[0];
-      S.starGens.push({id:'sgm_'+f.id,nm:genName(),lead:ri(75,95),might:ri(70,95),wit:ri(60,90),force:f.id,city:c.id,loyal:ri(70,95),trs:[pick(OFF_TRAITS).nm]});});}
+  if(S.engRes===undefined)S.engRes=null;
+  if(!S.starGens.length){S.forces.forEach(f=>{if(f.id==='me')return;const own=S.nodes.filter(n=>n.owner===f.id&&!S.starGens.some(x=>x.city===n.id));if(!own.length)return;
+    const c=own.slice().sort((a,b)=>((b.pass?1:0)-(a.pass?1:0))||(safe(b.def,10)-safe(a.def,10)))[0];
+    S.starGens.push({id:'sgm_'+f.id,nm:genName(),lead:ri(75,95),might:ri(70,95),wit:ri(60,90),force:f.id,city:c.id,loyal:ri(70,95),trs:[pick(OFF_TRAITS).nm]});});}
   S._capturedStar=null;
-  S.defend=S.defend||null; // 守城战状态
+  if(S.defend===undefined)S.defend=null; // 守城战状态
   (S.officials||[]).forEach(o=>{if(o.isStar&&o.fav==null)o.fav=50;}); // 名将好感旧档兜底
   S.invite=S.invite||genInvite();S.seed=S.seed||'旧档';S.bonusDraw=S.bonusDraw||0;S.tutDone=S.tutDone||0;
-  // 行动点上限 5 → 15（旧档提升上限，并把异常/溢出的行动点复位，避免读档后点数不变）
-  S.apMax=16; if(S.ap==null||S.ap>S.apMax)S.ap=16; S.ap=Math.max(0,safe(S.ap,16)); // 第十二轮：行动点上限随初值回调至16，避免读档后点数被旧补丁复位
+  // 行动点上限统一为 15（第八轮需求），并把异常/溢出的行动点复位
+  S.apMax=15; if(S.ap==null||S.ap>S.apMax)S.ap=15; S.ap=Math.max(0,safe(S.ap,15));
   S.princes=(S.princes||[]).map(p=>{if(!p.six)p.six={统率:40,武力:40,智力:40,政治:40,魅力:40};if(p.cultCount==null)p.cultCount=0;if(!p.talent)p.talent=pick(['文','武','政','商','艺']);if(!p.status)p.status=p.age>=(p.son?16:14)?'成年':'幼年';return p;});
   S.concubines=(S.concubines||[]).map(c=>{if(c.skill==null)c.skill=null;return c;});
-  S.gold=safe(S.gold,0);S.armies=S.armies||{me:0};S.armies.me=Math.max(0,safe(S.armies.me,0));
-  (S.nodes||[]).forEach(n=>{n.troop=Math.max(0,safe(n.troop,0));n.def=safe(n.def,10);});
+  S.gold=safe(S.gold,0);S.armies.me=Math.max(0,safe(S.armies.me,0));
+  S.food=safe(S.food,0);S.pop=safe(S.pop,1000);S.heart=safe(S.heart,50);S.heartCap=safe(S.heartCap,100);
+  S.culture=safe(S.culture,0);S.rep=safe(S.rep,0);S.order=safe(S.order,50);S.corrupt=safe(S.corrupt,0.2);
+  S.central=safe(S.central,50);S.legit=safe(S.legit,50);S.fate=safe(S.fate,50);S.tech=safe(S.tech,0);
+  S.nodes.forEach(n=>{n.troop=Math.max(0,safe(n.troop,0));n.def=safe(n.def,10);});
+}
+function isSaveValid(){
+  if(!S)return false;
+  return !!(S.era&&S.nodes&&S.nodes.length&&S.forces&&S.forces.length&&S.mods&&S.armies);
 }
 function saveGame(){if(!S)return;try{localStorage.setItem(SAVE_KEY,JSON.stringify(S));}catch(e){}}
-function loadGame(){try{const r=localStorage.getItem(SAVE_KEY);if(!r)return false;S=JSON.parse(r);migrateS();applySettings();fromNode=null;toNode=null;return true;}catch(e){return false;}}
+function loadGame(){try{const r=localStorage.getItem(SAVE_KEY);if(!r)return false;S=JSON.parse(r);migrateS();if(!isSaveValid()){S=null;localStorage.removeItem(SAVE_KEY);return false;}applySettings();fromNode=null;toNode=null;return true;}catch(e){S=null;return false;}}
 function exportSave(){const data=JSON.stringify(S);const blob=new Blob([data],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='dragon_empire_'+Date.now()+'.json';a.click();toast('存档已导出');}
 function importSave(){const inp=document.createElement('input');inp.type='file';inp.accept='application/json';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{S=JSON.parse(r.result);migrateS();applySettings();renderAll();toast('存档已导入');closeModal();}catch(e){toast('存档解析失败');}};r.readAsText(f);};inp.click();}
 function resetGame(){if(!confirm('确定重置？将清除所有存档并重新开始。'))return;localStorage.removeItem(SAVE_KEY);location.reload();}
@@ -2269,7 +2312,7 @@ function startDyn(key,diff){const sd=(document.getElementById('st_seed')||{}).va
   if(S.seed&&S.seed===seasonSeed()){S.season=isoWeekKey();log('🏅 赛季挑战：以第 '+S.season+' 周官方种子开局，统一天下即上榜竞速！');}
   saveGame();closeModal();renderAll();updateDragonFx();
   if(S.diff==='normal'){showModal('📌 普通模式 · 经济趋紧', '<p>普通模式下国库<b>更紧张</b>：税收 −20%、商路收益 −25%、战后掠夺 −30%、兴修 / 火器 / 宫室开销上升、官员俸禄更贵。</p><p>建议：优先发展<b>户部（征税 / 商路）</b>，控制官员编制（<b>裁撤冗余</b>可省四成俸禄），精打细算每一载入的开支。</p><div class="row"><button class="btn gold" onclick="closeModal()">朕知道了</button></div>');}  // 平衡性优化：普通首局强制提示经济趋紧
-  if(S.settings.guide){toast('👑 开国！每载入18行动点（多数行动每载入限1次），治理六部、征战沙盘、经营后宫，达成一统天下等胜利。');maybeTutorial();}}
+  if(S.settings.guide){toast('👑 开国！每载入15行动点（多数行动每载入限1次），治理六部、征战沙盘、经营后宫，达成一统天下等胜利。');maybeTutorial();}}
 function showStart(){
   let h='<p style="text-align:center">择朝代与难度，开启你的帝王之路。</p>';
   h+='<p>难度：</p><div class="seg" id="st_diff">'+Object.keys(DIFFS).map((k,i)=>'<button class="'+(i===1?'on':'')+'" data-d="'+k+'" onclick="selDiff(\''+k+'\')">'+DIFFS[k].name+'</button>').join('')+'</div>';
@@ -2304,7 +2347,7 @@ const DE_PVP = {
   serverUrl: 'wss://eternal-empire-pvp-production.up.railway.app',
 
   init(options) {
-    this.serverUrl = options.serverUrl || 'ws://localhost:3000';
+    this.serverUrl = options.serverUrl || 'wss://eternal-empire-pvp-production.up.railway.app';
     console.log('PvP 系统初始化，服务器:', this.serverUrl);
   },
 
@@ -2313,11 +2356,21 @@ const DE_PVP = {
       alert('请先设置服务器地址');
       return;
     }
-    this.ws = new WebSocket(this.serverUrl);
+    try {
+      this.ws = new WebSocket(this.serverUrl);
+    } catch (e) {
+      console.error('WebSocket 创建失败:', e);
+      this.showNotification('连接失败: ' + e.message, 'error');
+      return;
+    }
 
     this.ws.onopen = () => {
       console.log('PvP 已连接');
       this.showNotification('已连接到对战服务器', 'success');
+      // 连接成功后自动刷新面板，显示"创建房间"等按钮
+      if (document.getElementById('modal').classList.contains('show')) {
+        this.renderPanel();
+      }
     };
 
     this.ws.onmessage = (event) => {
@@ -2445,8 +2498,10 @@ const DE_PVP = {
   },
 
   showPanel() {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.connect();
+    // 如果已连接则直接显示面板
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.renderPanel();
+      return;
     }
 
     let h = '<div class="card3" style="margin-top:10px">';
@@ -2455,26 +2510,94 @@ const DE_PVP = {
     h += '与好友进行 <b>30秒限时竞技</b>，比拼谁先占领更多城池！<br>';
     h += '双方同时操作，时间到或认输后判定胜负。<br>';
     h += '</div>';
-    h += '<div class="row" style="margin-top:10px">';
-    h += '<button class="btn" onclick="DE_PVP.createRoom()">创建房间</button>';
-    h += '<button class="btn" onclick="DE_PVP.joinRoom()">加入房间</button>';
-    h += '<button class="btn" id="pvp_ready_btn" onclick="DE_PVP.toggleReady()">准备</button>';
+
+    // 添加服务器地址输入框
+    h += '<div class="row" style="margin-top:15px; gap:8px">';
+    h += '<input type="text" id="pvp_server_url" placeholder="输入服务器地址" value="wss://eternal-empire-pvp-production.up.railway.app" style="flex:1; padding:8px; border-radius:6px; border:1px solid var(--border); background:var(--bg2); color:var(--text);">';
+    h += '<button class="btn" onclick="DE_PVP.connect()">连接</button>';
     h += '</div>';
-    h += '<div id="pvp_status" class="muted" style="margin-top:8px">等待中...</div>';
-    h += '<div id="pvp_timer" style="font-size:24px;color:var(--gold2);text-align:center;margin:10px 0">--</div>';
-    h += '<div class="row" style="margin-top:8px">';
-    h += '<button class="btn" onclick="DE_PVP.doAction(\'attack\')">⚔ 进攻(+2)</button>';
-    h += '<button class="btn" onclick="DE_PVP.doAction(\'defend\')">🛡 防守(+1)</button>';
-    h += '<button class="btn" onclick="DE_PVP.doAction(\'build\')">🏗 建造(+3)</button>';
+
+    h += '<div id="pvp_status" class="muted" style="margin-top:8px">等待连接...</div>';
+
+    // 分享按钮始终显示（无需连接）
+    h += '<div class="row" style="gap:8px;margin-top:12px">';
+    h += '<button class="btn gold sm" onclick="DE_PVP.shareGame()">📤 分享游戏</button>';
+    h += '<span class="muted" style="font-size:12px">把链接发给好友，对方打开并输入相同种子 = 同图竞速</span>';
     h += '</div>';
-    h += '<div class="row" style="margin-top:8px">';
-    h += '<button class="btn" onclick="DE_PVP.doAction(\'recruit\')">👥 征兵(+1)</button>';
-    h += '<button class="btn" onclick="DE_PVP.doAction(\'trade\')">💰 贸易(+1)</button>';
-    h += '<button class="btn" style="color:var(--bad)" onclick="DE_PVP.surrender()">🏳 认输</button>';
-    h += '</div>';
+
     h += '</div>';
 
     showModal('⚔ 实时对战', h);
+  },
+
+  renderPanel() {
+    const roomId = this.currentRoom || '(未加入房间)';
+    const playerState = this.playerId ? '玩家ID: ' + this.playerId.slice(0, 8) + '...' : '未认证';
+    const readyState = this.isReady ? '已准备 ✓' : '未准备';
+    const roomBtn = this.currentRoom
+      ? '<button class="btn sm" onclick="DE_PVP.surrender()">认输</button>'
+      : '<button class="btn gold sm" onclick="DE_PVP.createRoom()">创建房间</button>'
+      + '<button class="btn sm" onclick="DE_PVP.joinRoom()">加入房间</button>';
+
+    let h = '<div class="card3" style="margin-top:10px">';
+    h += '<p class="h">⚔ 实时对战</p>';
+    h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-bottom:12px">';
+    h += '<span class="muted">服务器: <b style="color:var(--gold2)">本地(3000)</b></span>';
+    h += '<span class="muted">状态: <b style="color:var(--good)">已连接</b></span>';
+    h += '<span class="muted">房间: <b>' + roomId + '</b></span>';
+    h += '<span class="muted">准备: <b id="pvp_ready_btn">' + readyState + '</b></span>';
+    h += '</div>';
+
+    h += '<div class="row" style="gap:8px;margin-bottom:12px">';
+    h += roomBtn;
+    h += '<button class="btn sm" onclick="DE_PVP.toggleReady()">准备/取消</button>';
+    h += '<button class="btn sm" onclick="DE_PVP.showPanel()">刷新</button>';
+    h += '</div>';
+
+    // 游戏分享按钮
+    h += '<div class="row" style="gap:8px;margin-bottom:8px">';
+    h += '<button class="btn gold sm" onclick="DE_PVP.shareGame()">📤 分享游戏</button>';
+    h += '<span class="muted" style="font-size:12px">把链接发给好友，对方打开并输入相同种子 = 同图竞速</span>';
+    h += '</div>';
+
+    h += '<div id="pvp_status" class="muted" style="margin-top:8px">就绪</div>';
+    h += '</div>';
+
+    showModal('⚔ 实时对战', h);
+  },
+
+  // 分享游戏链接给好友
+  shareGame() {
+    const seed = S && S.seed ? S.seed : seasonSeed();
+    const url = window.location.href.split('?')[0];
+    // 使用在线服务器，好友可以直接加入
+    const shareText = '🎮 永恒帝国 · 龙之纪元\n\n赛季种子: ' + seed + '\n\n点开链接开局，输入相同种子 = 同图竞速！\n双方使用在线服务器，异地好友可直接联机。\n\n' + url;
+
+    // 复制到剪贴板
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(shareText).then(() => {
+        toast('📤 分享文本已复制，发给好友吧！');
+      }).catch(() => {
+        this.fallbackCopy(shareText);
+      });
+    } else {
+      this.fallbackCopy(shareText);
+    }
+  },
+
+  fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      toast('分享文本已复制，发给好友吧！');
+    } catch(e) {
+      toast('复制失败，请手动复制: ' + text.slice(0, 50) + '...');
+    }
+    document.body.removeChild(ta);
   },
 
   updateReadyButton() {
