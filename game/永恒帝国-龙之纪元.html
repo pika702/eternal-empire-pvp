@@ -4568,13 +4568,16 @@ function startDyn(key,diff){const sd=(document.getElementById('st_seed')||{}).va
 
  if(S.settings.guide){toast('👑 开国！每载入15行动点（多数行动每载入限1次），治理六部、征战沙盘、经营后宫，达成一统天下等胜利。');maybeTutorial();}}
 
-function showStart(){
+function showStart(pvpMode=false){
 
- let h='<p style="text-align:center">择朝代与难度，开启你的帝王之路。</p>';
-
- h+='<p>难度：</p><div class="seg" id="st_diff">'+Object.keys(DIFFS).map((k,i)=>'<button class="'+(i===1?'on':'')+'" data-d="'+k+'" onclick="selDiff(\''+k+'\')">'+DIFFS[k].name+'</button>').join('')+'</div>';
-
- h+='<p class="muted" id="st_ddesc">'+DIFFS.normal.desc+'</p>';
+ let h='';
+ if (pvpMode) {
+   h+='<p style="text-align:center;color:var(--gold2)">⚔ 实时对战准备中 — 请选择朝代</p>';
+ } else {
+   h+='<p style="text-align:center">择朝代与难度，开启你的帝王之路。</p>';
+   h+='<p>难度：</p><div class="seg" id="st_diff">'+Object.keys(DIFFS).map((k,i)=>'<button class="'+(i===1?'on':'')+'" data-d="'+k+'" onclick="selDiff(\''+k+'\')">'+DIFFS[k].name+'</button>').join('')+'</div>';
+   h+='<p class="muted" id="st_ddesc">'+DIFFS.normal.desc+'</p>';
+ }
 
  h+='<p>朝代：</p><div class="row">';
 
@@ -4582,7 +4585,15 @@ function showStart(){
 
  h+='</div>';
 
- h+='<div id="st_start_btn" style="text-align:right;margin-top:15px;display:none"><button class="btn gold" style="font-size:16px;padding:10px 30px" onclick="startDyn(_selDyn,_selDiff)">开始游戏</button></div>';
+ if (pvpMode) {
+   const myName = DE_PVP.playerDyn ? DYNASTIES[DE_PVP.playerDyn].nm : '未选择';
+   const oppName = DE_PVP.opponentDyn ? DYNASTIES[DE_PVP.opponentDyn].nm : '未选择';
+   const startDisabled = DE_PVP.playerDyn ? '' : ' disabled';
+   h+='<p class="muted" style="font-size:13px">我的朝代：<b style="color:var(--gold2)">'+myName+'</b>　对手朝代：<b style="color:var(--gold2)">'+oppName+'</b></p>';
+   h+='<div id="st_start_btn" style="text-align:right;margin-top:15px;display:none"><button class="btn gold" style="font-size:16px;padding:10px 30px" onclick="DE_PVP.confirmStart()"'+startDisabled+'>确认开始</button><button class="btn" style="margin-left:8px" onclick="DE_PVP.exitPvpSetup()">返回对战面板</button></div>';
+ } else {
+   h+='<div id="st_start_btn" style="text-align:right;margin-top:15px;display:none"><button class="btn gold" style="font-size:16px;padding:10px 30px" onclick="startDyn(_selDyn,_selDiff)">开始游戏</button></div>';
+ }
 
  let rv=null;try{rv=JSON.parse(localStorage.getItem('de_rival'));}catch(e){}
 
@@ -4616,6 +4627,16 @@ function selectDyn(k){
 
  if(btn)btn.style.display='block';
 
+ // PvP 准备态：通知服务器自己选择的朝代
+ if (typeof DE_PVP !== 'undefined' && DE_PVP.inPvpSetup) {
+   DE_PVP.playerDyn = k;
+   if (DE_PVP.ws && DE_PVP.ws.readyState === 1) {
+     DE_PVP.ws.send(JSON.stringify({ type: 'select_dynasty', dynasty: k }));
+   }
+   const startBtn = btn ? btn.querySelector('button') : null;
+   if (startBtn) startBtn.disabled = false;
+ }
+
 }
 
 function useSeasonSeed(){const el=document.getElementById('st_seed');if(el)el.value=seasonSeed();toast('🏅 已填入第 '+isoWeekKey()+' 周官方赛季种子，选朝代开局即参赛！');}
@@ -4648,6 +4669,8 @@ const DE_PVP = {
  bothReady: false,
 
  gameStarted: false,
+
+ inPvpSetup: false,
 
  // 默认优先使用在线服务器（异地好友可直接对战）
 
@@ -5190,15 +5213,22 @@ h += '<div id="pvp_status" class="muted" style="margin-top:8px">就绪</div>';
      this.showNotification('请先创建或加入房间', 'error');
      return;
    }
-   if (!this.bothReady) {
-     this.showNotification('请等待双方准备就绪', 'error');
-     return;
-   }
    if (this.gameStarted) {
      this.showNotification('游戏已经开始', 'error');
      return;
    }
-   this.showPreparePhase();
+   // 直接进入主界面的朝代选择页，不再硬性等待双方准备
+   this.inPvpSetup = true;
+   closeModal();
+   setTimeout(() => showStart(true), 50);
+ },
+
+ // 退出 PvP 准备态，返回对战面板
+ exitPvpSetup() {
+   this.inPvpSetup = false;
+   this.playerDyn = null;
+   closeModal();
+   setTimeout(() => this.renderPanel(), 50);
  },
 
  // 显示 PvP 朝代选择准备面板
