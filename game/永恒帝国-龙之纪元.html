@@ -4613,7 +4613,7 @@ let _selDiff='normal',_selDyn=null;
 
 function selDiff(k){_selDiff=k;$$('#st_diff button').forEach(b=>b.classList.toggle('on',b.dataset.d===k));document.getElementById('st_ddesc').textContent=DIFFS[k].desc;}
 
-function selectDyn(k){
+ function selectDyn(k){
 
  _selDyn=k;
 
@@ -4633,11 +4633,18 @@ function selectDyn(k){
    if (DE_PVP.ws && DE_PVP.ws.readyState === 1) {
      DE_PVP.ws.send(JSON.stringify({ type: 'select_dynasty', dynasty: k }));
    }
+   // 刷新 modual 里显示的朝代文字和按钮状态
+   const pvpInfo = document.querySelector('#modal .muted');
+   if (pvpInfo) {
+     const myName = DE_PVP.playerDyn ? DYNASTIES[DE_PVP.playerDyn].nm : '未选择';
+     const oppName = DE_PVP.opponentDyn ? DYNASTIES[DE_PVP.opponentDyn].nm : '未选择';
+     pvpInfo.innerHTML = '我的朝代：<b style="color:var(--gold2)">'+myName+'</b>　对手朝代：<b style="color:var(--gold2)">'+oppName+'</b>';
+   }
    const startBtn = btn ? btn.querySelector('button') : null;
-   if (startBtn) startBtn.disabled = false;
+   if (startBtn) startBtn.disabled = !DE_PVP.playerDyn;
  }
 
-}
+ }
 
 function useSeasonSeed(){const el=document.getElementById('st_seed');if(el)el.value=seasonSeed();toast('🏅 已填入第 '+isoWeekKey()+' 周官方赛季种子，选朝代开局即参赛！');}
 
@@ -5311,12 +5318,14 @@ h += '<div id="pvp_status" class="muted" style="margin-top:8px">就绪</div>';
  this.showNotification('未连接服务器', 'error');
  return;
  }
- // 发送开始确认
+ // 发送开始确认（带上当前朝代）
  this.ws.send(JSON.stringify({
  type: 'confirm_start',
  dynasty: this.playerDyn
  }));
  this.showNotification('已确认开始，等待对手...', 'info');
+ // 关闭 modual 回到游戏
+ setTimeout(() => closeModal(), 300);
  },
 
  disconnect() {
