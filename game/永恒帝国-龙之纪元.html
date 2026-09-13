@@ -4674,6 +4674,7 @@ const DE_PVP = {
  totalTurns: 20,
  ap: 20,
  maxAp: 20,
+ serverVersion: 0,
  stats: null,
  opponentStats: null,
  turnTimer: null,
@@ -4720,7 +4721,13 @@ const DE_PVP = {
  },
  handleMessage(msg) {
   switch (msg.type) {
-   case 'connected': this.playerId = msg.playerId; break;
+   case 'connected':
+    this.playerId = msg.playerId;
+    this.serverVersion = msg.version || 1;
+    if (this.serverVersion < 2) {
+      this.showNotification('警告：当前服务器是旧版（30秒刷分模式），与回合制客户端不匹配。请房主更新服务器后再联机。', 'error');
+    }
+    break;
    case 'room_created': this.currentRoom = msg.roomId; this.showNotification('房间创建成功: ' + msg.roomId, 'success'); break;
    case 'joined': this.showNotification(msg.message, 'success'); break;
    case 'ready_changed':
@@ -4816,7 +4823,8 @@ const DE_PVP = {
   );
  },
  showBattlePanel() {
-  if (!this.stats) return;
+  // 服务器版本异常/未下发 stats 时用默认值兜底，避免直接 return 导致黑屏
+  if (!this.stats) this.stats = { gold: 0, food: 0, pop: 0, culture: 0, fame: 0, military: 0, heart: 0, authority: 0, law: 0, legitimacy: 0 };
   const power = this.calculatePowerScore(this.stats);
   const oppPower = this.opponentStats ? this.calculatePowerScore(this.opponentStats) : 0;
   const myDynName = this.playerDyn && DYNASTIES[this.playerDyn] ? DYNASTIES[this.playerDyn].nm : '未知';
@@ -4955,7 +4963,7 @@ const DE_PVP = {
   h += '<p class="h">实时对战</p>';
   h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-bottom:12px">';
   h += '<span class="muted">服务器: <b style="color:var(--gold2)">' + serverLabel + '</b></span>';
-  h += '<span class="muted">状态: <b style="color:var(--good)">已连接</b></span>';
+  h += '<span class="muted">状态: <b style="color:' + (this.serverVersion >= 2 ? 'var(--good)' : 'var(--bad)') + '">' + (this.serverVersion >= 2 ? '已连接·回合制v2' : '已连接·旧版v1不兼容') + '</b></span>';
   h += '<span class="muted">房间: <b>' + roomId + '</b></span>';
   h += '<span class="muted">准备: <b id="pvp_ready_btn">' + readyState + '</b></span>';
   h += '</div>';
@@ -5019,8 +5027,10 @@ const DE_PVP = {
   if (!this.playerDyn) { this.showNotification('请先选择一个朝代', 'error'); return; }
   if (!this.ws || this.ws.readyState !== 1) { this.showNotification('未连接服务器', 'error'); return; }
   this.ws.send(JSON.stringify({ type: 'confirm_start', dynasty: this.playerDyn }));
-  this.showNotification('已确认开始，等待对手...', 'info');
-  setTimeout(() => closeModal(), 300);
+  this.showNotification('已确认开始，等待对手确认...', 'info');
+  // 不再延迟 closeModal：否则会把随后由 game_start 打开的对战面板一起关掉，造成黑屏
+  const st = document.getElementById('pvp_status');
+  if (st) st.textContent = '已确认，等待对手确认后自动进入对战…';
  },
  disconnect() {
   if (this.ws) { try { this.ws.close(); } catch(e) {} this.ws = null; }
