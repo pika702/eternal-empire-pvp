@@ -2344,18 +2344,45 @@ const DE_PVP = {
   playerId: null,
   currentRoom: null,
   isReady: false,
+  // 默认优先使用在线服务器（异地好友可直接对战）
   serverUrl: 'wss://eternal-empire-pvp-production.up.railway.app',
+  // 服务器预设
+  SERVER_PRESETS: {
+    online: { label: '在线服务器(异地)', url: 'wss://eternal-empire-pvp-production.up.railway.app' },
+    local: { label: '本地服务器(同机)', url: 'ws://localhost:3000' },
+    lan: { label: '局域网服务器', url: 'ws://localhost:3000' }
+  },
 
   init(options) {
     this.serverUrl = options.serverUrl || 'wss://eternal-empire-pvp-production.up.railway.app';
     console.log('PvP 系统初始化，服务器:', this.serverUrl);
   },
 
+  // 快速选择服务器预设
+  setPreset(key) {
+    const preset = this.SERVER_PRESETS[key];
+    if (!preset) return;
+    this.serverUrl = preset.url;
+    const input = document.getElementById('pvp_server_url');
+    if (input) input.value = preset.url;
+    // 如果已经连接，断开并重新连接
+    if (this.ws) {
+      try { this.ws.close(); } catch(e) {}
+      this.ws = null;
+    }
+    this.connect();
+  },
+
   connect() {
+    const input = document.getElementById('pvp_server_url');
+    if (input && input.value.trim()) {
+      this.serverUrl = input.value.trim();
+    }
     if (!this.serverUrl) {
       alert('请先设置服务器地址');
       return;
     }
+    this.showNotification('正在连接 ' + this.serverUrl + ' ...', 'info');
     try {
       this.ws = new WebSocket(this.serverUrl);
     } catch (e) {
@@ -2384,12 +2411,24 @@ const DE_PVP = {
 
     this.ws.onerror = (err) => {
       console.error('WebSocket 错误:', err);
-      this.showNotification('连接错误，请检查服务器地址', 'error');
+      this.showNotification('连接错误，请检查服务器地址或网络', 'error');
     };
 
-    this.ws.onclose = () => {
-      console.log('PvP 连接断开');
-      this.showNotification('服务器已断开', 'error');
+    this.ws.onclose = (event) => {
+      console.log('PvP 连接断开', event.code, event.reason);
+      const wasOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
+      this.showNotification('服务器已断开 (代码:' + event.code + ')', 'error');
+      // 如果面板还打开，3秒后自动重连一次
+      if (document.getElementById('modal').classList.contains('show') && !this._reconnecting) {
+        this._reconnecting = true;
+        setTimeout(() => {
+          this._reconnecting = false;
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this.showNotification('正在尝试自动重连...', 'info');
+            this.connect();
+          }
+        }, 3000);
+      }
     };
   },
 
@@ -2511,16 +2550,25 @@ const DE_PVP = {
     h += '双方同时操作，时间到或认输后判定胜负。<br>';
     h += '</div>';
 
+    // 服务器预设选择
+    h += '<div class="row" style="margin-top:15px; gap:8px; flex-wrap:wrap">';
+    h += '<select id="pvp_server_preset" onchange="DE_PVP.setPreset(this.value)" style="padding:8px; border-radius:6px; border:1px solid var(--border); background:var(--bg2); color:var(--text);">';
+    h += '<option value="online">🌐 在线服务器（异地好友）</option>';
+    h += '<option value="local">🏠 本地服务器（自己电脑）</option>';
+    h += '<option value="lan">📡 局域网服务器（同WiFi）</option>';
+    h += '</select>';
+    h += '</div>';
+
     // 添加服务器地址输入框
-    h += '<div class="row" style="margin-top:15px; gap:8px">';
-    h += '<input type="text" id="pvp_server_url" placeholder="输入服务器地址" value="wss://eternal-empire-pvp-production.up.railway.app" style="flex:1; padding:8px; border-radius:6px; border:1px solid var(--border); background:var(--bg2); color:var(--text);">';
+    h += '<div class="row" style="margin-top:10px; gap:8px">';
+    h += '<input type="text" id="pvp_server_url" placeholder="输入服务器地址" value="' + this.serverUrl + '" style="flex:1; padding:8px; border-radius:6px; border:1px solid var(--border); background:var(--bg2); color:var(--text);">';
     h += '<button class="btn" onclick="DE_PVP.connect()">连接</button>';
     h += '</div>';
 
     h += '<div id="pvp_status" class="muted" style="margin-top:8px">等待连接...</div>';
 
     // 分享按钮始终显示（无需连接）
-    h += '<div class="row" style="gap:8px;margin-top:12px">';
+    h += '<div class="row" style="gap:8px;margin-top:12px; align-items:flex-start">';
     h += '<button class="btn gold sm" onclick="DE_PVP.shareGame()">📤 分享游戏</button>';
     h += '<span class="muted" style="font-size:12px">把链接发给好友，对方打开并输入相同种子 = 同图竞速</span>';
     h += '</div>';
@@ -2528,6 +2576,19 @@ const DE_PVP = {
     h += '</div>';
 
     showModal('⚔ 实时对战', h);
+    // 根据当前 serverUrl 设置下拉框
+    this._syncPresetSelect();
+  },
+
+  _syncPresetSelect() {
+    const select = document.getElementById('pvp_server_preset');
+    if (!select) return;
+    const found = Object.entries(this.SERVER_PRESETS).find(([k, v]) => v.url === this.serverUrl);
+    if (found) {
+      select.value = found[0];
+    } else {
+      select.value = '';
+    }
   },
 
   renderPanel() {
@@ -2538,24 +2599,29 @@ const DE_PVP = {
       ? '<button class="btn sm" onclick="DE_PVP.surrender()">认输</button>'
       : '<button class="btn gold sm" onclick="DE_PVP.createRoom()">创建房间</button>'
       + '<button class="btn sm" onclick="DE_PVP.joinRoom()">加入房间</button>';
+    const serverLabel = this.serverUrl.includes('railway')
+      ? '🌐 在线服务器'
+      : (this.serverUrl.includes('localhost') ? '🏠 本地服务器' : '📡 自定义服务器');
 
     let h = '<div class="card3" style="margin-top:10px">';
     h += '<p class="h">⚔ 实时对战</p>';
     h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-bottom:12px">';
-    h += '<span class="muted">服务器: <b style="color:var(--gold2)">本地(3000)</b></span>';
+    h += '<span class="muted">服务器: <b style="color:var(--gold2)">' + serverLabel + '</b></span>';
+    h += '<span class="muted">地址: <b style="color:var(--gold2);font-size:11px">' + this.serverUrl + '</b></span>';
     h += '<span class="muted">状态: <b style="color:var(--good)">已连接</b></span>';
     h += '<span class="muted">房间: <b>' + roomId + '</b></span>';
     h += '<span class="muted">准备: <b id="pvp_ready_btn">' + readyState + '</b></span>';
     h += '</div>';
 
-    h += '<div class="row" style="gap:8px;margin-bottom:12px">';
+    h += '<div class="row" style="gap:8px;margin-bottom:12px; flex-wrap:wrap">';
     h += roomBtn;
     h += '<button class="btn sm" onclick="DE_PVP.toggleReady()">准备/取消</button>';
     h += '<button class="btn sm" onclick="DE_PVP.showPanel()">刷新</button>';
+    h += '<button class="btn sm" onclick="DE_PVP.disconnect()">断开</button>';
     h += '</div>';
 
     // 游戏分享按钮
-    h += '<div class="row" style="gap:8px;margin-bottom:8px">';
+    h += '<div class="row" style="gap:8px;margin-bottom:8px; align-items:flex-start">';
     h += '<button class="btn gold sm" onclick="DE_PVP.shareGame()">📤 分享游戏</button>';
     h += '<span class="muted" style="font-size:12px">把链接发给好友，对方打开并输入相同种子 = 同图竞速</span>';
     h += '</div>';
@@ -2566,12 +2632,36 @@ const DE_PVP = {
     showModal('⚔ 实时对战', h);
   },
 
+  disconnect() {
+    if (this.ws) {
+      try { this.ws.close(); } catch(e) {}
+      this.ws = null;
+    }
+    this.playerId = null;
+    this.currentRoom = null;
+    this.isReady = false;
+    this.showNotification('已断开连接', 'info');
+    this.showPanel();
+  },
+
   // 分享游戏链接给好友
   shareGame() {
     const seed = S && S.seed ? S.seed : seasonSeed();
-    const url = window.location.href.split('?')[0];
-    // 使用在线服务器，好友可以直接加入
-    const shareText = '🎮 永恒帝国 · 龙之纪元\n\n赛季种子: ' + seed + '\n\n点开链接开局，输入相同种子 = 同图竞速！\n双方使用在线服务器，异地好友可直接联机。\n\n' + url;
+    // 使用GitHub Pages作为在线游戏地址（好友可直接打开）
+    const gameUrl = 'https://pika702.github.io/eternal-empire-pvp/';
+    // 当前使用的服务器地址
+    const serverUrl = this.serverUrl || 'wss://eternal-empire-pvp-production.up.railway.app';
+    const isOnline = serverUrl.includes('railway');
+
+    let shareText = '🎮 永恒帝国 · 龙之纪元\n\n';
+    shareText += '🌾 赛季种子: ' + seed + '\n\n';
+    shareText += '👉 玩法：点开链接开局，在游戏设置里输入相同种子，即可同图竞速！\n';
+    if (isOnline) {
+      shareText += '⚔️ 想对战？进入「设置→实时对战」，点连接即可自动匹配在线服务器。\n';
+    } else {
+      shareText += '⚔️ 想对战？房主先启动本地服务器，好友进入「设置→实时对战」连接同一服务器。\n';
+    }
+    shareText += '\n' + gameUrl;
 
     // 复制到剪贴板
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2593,9 +2683,9 @@ const DE_PVP = {
     ta.select();
     try {
       document.execCommand('copy');
-      toast('分享文本已复制，发给好友吧！');
+      toast('📤 分享文本已复制，发给好友吧！');
     } catch(e) {
-      toast('复制失败，请手动复制: ' + text.slice(0, 50) + '...');
+      prompt('请复制以下分享文本发给好友：', text);
     }
     document.body.removeChild(ta);
   },
