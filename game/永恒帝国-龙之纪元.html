@@ -4915,6 +4915,10 @@ setPreset(key) {
 
  case 'game_end':
 
+ this.gameStarted = false;
+
+ this.inPvpSetup = false;
+
  this.showNotification(msg.message, msg.isWinner ? 'success' : 'error');
 
  break;
@@ -4924,6 +4928,11 @@ setPreset(key) {
  this.bothReady = !!msg.bothReady;
  if (msg.yourDynasty) this.playerDyn = msg.yourDynasty;
  if (msg.otherPlayerDynasty) this.opponentDyn = msg.otherPlayerDynasty;
+ // 房间已结束/玩家不足时重置，允许下一局重新开始
+ if (msg.state === 'ended' || !msg.playerCount || msg.playerCount < 2) {
+   this.gameStarted = false;
+   this.inPvpSetup = false;
+ }
  break;
 
  case 'opponent_confirmed':
@@ -5213,11 +5222,14 @@ h += '<div id="pvp_status" class="muted" style="margin-top:8px">就绪</div>';
      this.showNotification('请先创建或加入房间', 'error');
      return;
    }
+   // 若上局残留 gameStarted=true，自动重置并继续
    if (this.gameStarted) {
-     this.showNotification('游戏已经开始', 'error');
-     return;
+     this.gameStarted = false;
+     this.inPvpSetup = false;
+     this.playerDyn = null;
+     this.showNotification('上局已结束，重新开始准备...', 'info');
    }
-   // 直接进入主界面的朝代选择页，不再硬性等待双方准备
+   // 直接进入主界面的朝代选择页
    this.inPvpSetup = true;
    closeModal();
    setTimeout(() => showStart(true), 50);
