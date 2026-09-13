@@ -906,7 +906,7 @@ function renderTop(){
   document.getElementById('t-diff').textContent=DIFFS[S.diff].name;
   const dot=document.getElementById('apdot');let s='';for(let i=0;i<S.apMax;i++)s+='<i class="'+(i<S.ap?'on':'')+'"></i>';dot.innerHTML=s;
 }
-function renderAll(){if(!S)return;renderTop();if(curScreen==='court')renderCourt();if(curScreen==='sandbox')renderSandbox();if(curScreen==='harem')renderHarem();if(curScreen==='cards')renderCards();if(curScreen==='chron')renderChron();if(curScreen==='sets')renderSets();updateDragonFx();}
+function renderAll(){if(!S)return;try{renderTop();}catch(e){console.error('renderTop failed:', e);}try{if(curScreen==='court')renderCourt();else if(curScreen==='sandbox')renderSandbox();else if(curScreen==='harem')renderHarem();else if(curScreen==='cards')renderCards();else if(curScreen==='chron')renderChron();else if(curScreen==='sets')renderSets();}catch(e){console.error('render'+curScreen+' failed:', e);const sc=document.getElementById('sc-'+curScreen);if(sc)sc.innerHTML='<div class="card3" style="border:1px solid #c33"><p class="h" style="color:#c33">⚠ 渲染异常</p><p class="muted">该视图发生错误：'+(e.message||e)+'</p><p class="muted">请刷新页面或截图发给开发者。</p></div>';}try{updateDragonFx();}catch(e){console.error('updateDragonFx failed:', e);}}
 function renderCourt(){
   const sc=document.getElementById('sc-court');
   let h='<div class="row">';
