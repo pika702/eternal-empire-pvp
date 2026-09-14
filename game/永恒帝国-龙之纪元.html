@@ -777,9 +777,11 @@ function powerScore(){let base=S.gold*1.5+S.food*0.03+S.pop*0.04+S.culture*0.5+S
 // 每攻占一城约 +126（≈基数的 7%），累计占满对手 15 城可使国力接近翻倍。
 if(S.realtimePvp){const mine=S.nodes.filter(n=>n.owner==='me');base+=mine.length*80+mine.reduce((s,n)=>s+safe(n.troop,0),0)*0.002;}return Math.round(base);}
 
-/* ===== PvP 实时国战：绝对阵营 A/B/N <-> 本地 me/opponent/neutral 互转（仅 realtime 路径使用，单机不受影响） ===== */
-function absToLocal(a){return a==='N'?'neutral':(a===S.side?'me':'opponent');}
-function localToAbs(l){return l==='neutral'?'N':(l==='me'?S.side:(S.side==='A'?'B':'A'));}
+/* ===== PvP 实时国战：绝对阵营 A/B/N <-> 本地 me/opponent/neutral 互转（仅 realtime 路径使用，单机不受影响） =====
+   注意：中立势力 N1/N2 本身就是双方一致的绝对 id，必须原样透传——
+   若漏掉会被当成"对方阵营"转换（'N1'→'B'），对手端再转回 'me'，中立城凭空易主 → 沙盘失同步。 */
+function absToLocal(a){if(a==='N1'||a==='N2')return a;return a==='N'?'neutral':(a===S.side?'me':'opponent');}
+function localToAbs(l){if(l==='N1'||l==='N2')return l;return l==='neutral'?'N':(l==='me'?S.side:(S.side==='A'?'B':'A'));}
 
 function checkAnnihilation(){
  if(!S||!S.realtimePvp)return;
@@ -815,6 +817,9 @@ function applySandboxDelta(d){
 }
 function neutralAI(){
  if(!S||!S.realtimePvp||!S.isNeutralDriver)return;
+ // 频率控制：每回合每个中立势力只随机进攻一次（S.year 即当前回合数，防止定时器/回合事件重复触发）
+ if(S._neutralTurn===S.year)return;
+ S._neutralTurn=S.year;
  S.forces.filter(f=>f.neutral).forEach(f=>{
   const mine=S.nodes.filter(n=>n.owner===f.id); if(!mine.length)return;
   const from=pick(mine);
@@ -1375,7 +1380,9 @@ function sandboxAI(){
  S.forces.forEach(f=>{
 
  if(!f.ai)return;
- if(S.realtimePvp){ if(f.id==='opponent')return; if(f.neutral&&!S.isNeutralDriver)return; }
+ // 实时国战：对手是真人（不走AI），中立只由 neutralAI 每回合驱动一次并经服务器同步。
+ // 若这里再跑中立就会"双重驱动"且不同步 → 双方沙盘失同步（好友端攻城被静默丢弃的根因）。
+ if(S.realtimePvp)return;
 
  const acts=Math.max(1,Math.round(ri(1,2)*S.aiK)); // 简单(0.5)≈1次、普通(1)1~2次、地狱(2)2~4次、国力过强时 aiK 放大→施压雪球流
 
@@ -2421,7 +2428,8 @@ function rotateHarem(){
 
 function gameOver(){endGame('驾崩无嗣','先帝崩而储位空悬，朝野分崩，'+S.era+' 王朝就此落幕');}
 
-function maybeEvent(){if(Math.random()<0.5){const evs=[
+// 随机事件频率：25%/回合 → 平均每 4 回合出现一次（符合"3~5 回合一遇"的设计预期；旧值 0.5 约每 2 回合一次，过于频繁）
+function maybeEvent(){if(Math.random()<0.25){const evs=[
 
  {k:'祥瑞',t:'天降祥瑞',fn:()=>{const h=ri(2,8);S.heart=clamp(S.heart+h,0,S.heartCap);log('天降祥瑞，民忠+'+h+'。');return '瑞雪兆丰，万民称颂，民忠 +'+h;}},
 
@@ -4897,7 +4905,7 @@ const DE_PVP = {
  onBattleResult(msg){ applySandboxDelta(msg.delta); },
  onNeutralMove(msg){ applySandboxDelta(msg.delta); if(msg.delta&&msg.delta.note)toast(msg.delta.note); },
  onAnnihilated(msg){ if(msg&&msg.results)this.showGameOver(msg); },
- onNeutralDriver(msg){ if(!S)return; S.isNeutralDriver=true; if(this.neutralTimer)clearInterval(this.neutralTimer); this.neutralTimer=setInterval(()=>neutralAI(),8000); },
+ onNeutralDriver(msg){ if(!S)return; S.isNeutralDriver=true; neutralAI(); },
  startTurnTimer(remaining) {
   this.stopTurnTimer();
   this.turnRemaining = remaining;
@@ -4937,8 +4945,7 @@ const DE_PVP = {
   this.showNotification('⚔ 对战开始！第 1/' + this.totalTurns + ' 回合 — 经营你的帝国，20 回合后比拼国力！', 'success');
 
   if (S && S.realtimePvp && S.isNeutralDriver) {
-   if (this.neutralTimer) clearInterval(this.neutralTimer);
-   this.neutralTimer = setInterval(() => neutralAI(), 8000);
+    neutralAI(); // 第1回合中立行动（内部有每回合一次守卫；不再是8秒定时器）
   }
  },
  onPvpTurnStart(msg) {
@@ -4946,6 +4953,8 @@ const DE_PVP = {
   if (msg.opponentStats) this.opponentSnapshot = msg.opponentStats;
   // 推进本地游戏到下一载入（粮食/沙盘/事件结算、AP 重置）；第1回合已在 enterPvpMainGame 初始化
   if (this.turn > 1) { nextYear(); }
+  // 中立势力每回合行动一次（仅房主驱动，结果经服务器同步给对手；内部有每回合一次守卫）
+  if (S && S.realtimePvp && S.isNeutralDriver) { neutralAI(); }
   this.endedThisTurn = false;
   this.renderPvpStatusBar();
   this.resetEndTurnBtn();
