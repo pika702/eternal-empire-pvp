@@ -2024,6 +2024,12 @@ function renderChron(){
 
  const sc=document.getElementById('sc-chron');if(!sc)return;
 
+ // PvP 对战模式：纪事页改为显示对战胜利条件与双方情况
+ if(typeof DE_PVP!=='undefined'&&DE_PVP.inMainGame){
+   sc.innerHTML=buildPvpChronBlock();
+   return;
+ }
+
  const v=victoryStatus();
 
  let h='<div class="card3"><p class="h">🏆 胜利条件　<span class="muted">已达成 '+v.done+' / '+v.list.length+'</span></p><div class="row">';
@@ -2266,7 +2272,7 @@ function nextYear(){
 
  else maybeTutorial();
 
- if(checkVictory())return;
+ if(!(typeof DE_PVP!=='undefined'&&DE_PVP.inMainGame) && checkVictory())return;
 
  if(S.gold<0)fiscalWarn();
 
@@ -4677,6 +4683,12 @@ const DE_PVP = {
  serverVersion: 0,
  stats: null,
  opponentStats: null,
+ inMainGame: false,
+ opponentSnapshot: null,
+ endedThisTurn: false,
+ clientTimer: null,
+ clientRemaining: 0,
+ pvpSeed: null,
  turnTimer: null,
  turnRemaining: 0,
  actions: [],
@@ -4749,28 +4761,19 @@ const DE_PVP = {
     break;
    case 'opponent_confirmed': this.showNotification('对手已确认开始', 'info'); break;
    case 'game_start':
-    this.gameStarted = true;
-    this.inPvpSetup = false;
-    this.turn = msg.turn || 1;
-    this.totalTurns = msg.totalTurns || 20;
-    this.ap = msg.ap || 20;
-    this.stats = msg.stats || null;
-    this.opponentStats = msg.opponentStats || null;
-    this.showNotification('游戏开始！' + msg.message, 'success');
-    this.showBattlePanel();
+    this.enterPvpMainGame(msg);
     break;
    case 'turn_start':
-    this.turn = msg.turn;
-    this.ap = msg.ap;
-    if (msg.stats) this.stats = msg.stats;
-    if (msg.opponentStats) this.opponentStats = msg.opponentStats;
-    this.showNotification('第 ' + this.turn + '/' + this.totalTurns + ' 回合开始！你有 ' + this.ap + ' 行动点', 'info');
-    this.showBattlePanel();
-    this.startTurnTimer(msg.remaining || 60000);
+    this.onPvpTurnStart(msg);
     break;
    case 'turn_countdown':
     this.turnRemaining = msg.remaining;
     this.updateTimerDisplay();
+    break;
+   case 'opponent_snapshot':
+    this.opponentSnapshot = msg.snapshot;
+    this.updatePvpStatusBar();
+    this.renderChronIfOpen();
     break;
    case 'action_result':
     this.ap = msg.ap;
@@ -4812,6 +4815,146 @@ const DE_PVP = {
  updateTimerDisplay() {
   const el = document.getElementById('pvp_timer');
   if (el) el.textContent = Math.ceil(this.turnRemaining / 1000) + '秒';
+ },
+ // ===== PvP 主界面联动模式（替代独立对战小面板）=====
+ enterPvpMainGame(msg) {
+  this.gameStarted = true;
+  this.inPvpSetup = false;
+  this.inMainGame = true;
+  this.endedThisTurn = false;
+  this.turn = msg.turn || 1;
+  this.totalTurns = msg.totalTurns || 20;
+  this.opponentSnapshot = msg.opponentStats || null;
+  this.pvpSeed = msg.seed || null;
+  closeModal();
+  // 用服务器给的共享种子 + 各自朝代开局，双方沙盘完全一致
+  const dyn = this.playerDyn;
+  newGame(dyn, 'normal', this.pvpSeed);
+  if (S && S.settings) S.settings.guide = false; // 关闭单机教程干扰
+  showScreen('court');
+  this.renderPvpStatusBar();
+  this.hideNextYearBtn();
+  this.startClientTurnTimer(msg.remaining || 60000);
+  this.showNotification('⚔ 对战开始！第 1/' + this.totalTurns + ' 回合 — 经营你的帝国，20 回合后比拼国力！', 'success');
+ },
+ onPvpTurnStart(msg) {
+  this.turn = msg.turn;
+  if (msg.opponentStats) this.opponentSnapshot = msg.opponentStats;
+  // 推进本地游戏到下一载入（粮食/沙盘/事件结算、AP 重置）；第1回合已在 enterPvpMainGame 初始化
+  if (this.turn > 1) { nextYear(); }
+  this.endedThisTurn = false;
+  this.renderPvpStatusBar();
+  this.resetEndTurnBtn();
+  this.renderChronIfOpen();
+  this.startClientTurnTimer(msg.remaining || 60000);
+ },
+ endTurn() {
+  if (!this.inMainGame) return;
+  if (!this.ws || this.ws.readyState !== 1) return;
+  if (this.endedThisTurn) return;
+  this.endedThisTurn = true;
+  this.stopClientTurnTimer();
+  const snap = this.buildSnapshot();
+  try { this.ws.send(JSON.stringify({ type: 'end_turn', turn: this.turn, snapshot: snap })); } catch (e) {}
+  const btn = this.getEndTurnBtn();
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 等待对手结束本回合…'; }
+  this.showNotification('已结束本回合，等待对手…', 'info');
+  this.startSnapshotTicker();
+ },
+ buildSnapshot() {
+  if (!S) return null;
+  return {
+   power: (typeof powerScore === 'function') ? powerScore() : 0,
+   gold: Math.round(S.gold),
+   food: Math.round(S.food),
+   pop: Math.round(S.pop),
+   culture: Math.round(S.culture),
+   rep: Math.round(S.rep),
+   military: Math.round(S.armies.me),
+   heart: Math.round(S.heart)
+  };
+ },
+ startClientTurnTimer(remaining) {
+  this.stopClientTurnTimer();
+  this.clientRemaining = remaining;
+  this.updatePvpTimer();
+  this.clientTimer = setInterval(() => {
+   this.clientRemaining -= 1000;
+   if (this.clientRemaining <= 0) {
+    this.clientRemaining = 0;
+    this.updatePvpTimer();
+    if (!this.endedThisTurn) this.endTurn();
+    return;
+   }
+   this.updatePvpTimer();
+  }, 1000);
+ },
+ stopClientTurnTimer() {
+  if (this.clientTimer) { clearInterval(this.clientTimer); this.clientTimer = null; }
+  this.stopSnapshotTicker();
+ },
+ startSnapshotTicker() {
+  this.stopSnapshotTicker();
+  this.snapTimer = setInterval(() => {
+   if (!this.ws || this.ws.readyState !== 1 || !this.inMainGame) return;
+   const snap = this.buildSnapshot();
+   if (snap) { try { this.ws.send(JSON.stringify({ type: 'snapshot', snapshot: snap })); } catch (e) {} }
+  }, 4000);
+ },
+ stopSnapshotTicker() {
+  if (this.snapTimer) { clearInterval(this.snapTimer); this.snapTimer = null; }
+ },
+ renderPvpStatusBar() {
+  let bar = document.getElementById('pvp_statusbar');
+  if (!bar) {
+   bar = document.createElement('div');
+   bar.id = 'pvp_statusbar';
+   bar.style.cssText = 'display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:13px;position:sticky;top:0;z-index:5';
+   const nav = document.getElementById('nav');
+   if (nav && nav.parentNode) nav.parentNode.insertBefore(bar, nav);
+  }
+  const myPower = (S && typeof powerScore === 'function') ? powerScore() : 0;
+  const oppPower = (this.opponentSnapshot && this.opponentSnapshot.power) || 0;
+  const oppName = this.opponentDyn && DYNASTIES[this.opponentDyn] ? DYNASTIES[this.opponentDyn].nm : '对手';
+  bar.innerHTML =
+   '<span style="color:var(--gold2);font-weight:bold">⚔ 对战模式</span>' +
+   '<span class="muted">第 <b style="color:var(--gold2)">' + this.turn + '</b>/' + this.totalTurns + ' 回合</span>' +
+   '<span class="muted">⏱ <b id="pvp_cltimer" style="color:var(--gold2)">' + Math.ceil(this.clientRemaining / 1000) + '秒</b></span>' +
+   '<span class="muted">我方国力 <b style="color:var(--good)">' + myPower + '</b></span>' +
+   '<span class="muted">' + oppName + '国力 <b style="color:var(--warn)">' + (oppPower || '--') + '</b></span>' +
+   '<button class="btn gold sm" id="pvp_endturn_btn" onclick="DE_PVP.endTurn()">结束回合 ⏭</button>';
+ },
+ updatePvpTimer() {
+  const t = document.getElementById('pvp_cltimer');
+  if (t) t.textContent = Math.ceil(this.clientRemaining / 1000) + '秒';
+ },
+ updatePvpStatusBar() {
+  this.renderPvpStatusBar();
+ },
+ getEndTurnBtn() { return document.getElementById('pvp_endturn_btn'); },
+ resetEndTurnBtn() {
+  const btn = this.getEndTurnBtn();
+  if (btn) { btn.disabled = false; btn.textContent = '结束回合 ⏭'; }
+ },
+ hideNextYearBtn() {
+  document.querySelectorAll('#nav button').forEach(b => {
+   if (b.getAttribute('onclick') && b.getAttribute('onclick').indexOf('nextYear') >= 0) b.style.display = 'none';
+  });
+ },
+ removePvpStatusBar() {
+  const bar = document.getElementById('pvp_statusbar');
+  if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+  document.querySelectorAll('#nav button').forEach(b => {
+   if (b.getAttribute('onclick') && b.getAttribute('onclick').indexOf('nextYear') >= 0) b.style.display = '';
+  });
+ },
+ renderChronIfOpen() {
+  if (typeof curScreen !== 'undefined' && curScreen === 'chron') renderChron();
+ },
+ exitPvpMainGame() {
+  this.inMainGame = false;
+  this.stopClientTurnTimer();
+  this.removePvpStatusBar();
  },
  calculatePowerScore(stats) {
   if (!stats) return 0;
@@ -4890,21 +5033,42 @@ const DE_PVP = {
   return '<button class="btn sm"' + dis + ' onclick="DE_PVP.doAction(\'' + action + '\')">' + name + '</button>';
  },
  showGameOver(msg) {
+  this.exitPvpMainGame();
   const results = msg.results || {};
   const myResult = results[this.playerId] || {};
   const oppResult = Object.entries(results).filter(([k]) => k !== this.playerId).map(([, v]) => v)[0] || {};
+  const mySnap = myResult.snapshot || {};
+  const oppSnap = oppResult.snapshot || {};
+  const myName = this.playerDyn && DYNASTIES[this.playerDyn] ? DYNASTIES[this.playerDyn].nm : '我方';
+  const oppName = this.opponentDyn && DYNASTIES[this.opponentDyn] ? DYNASTIES[this.opponentDyn].nm : '对手';
+  const rows = [['国库', 'gold'], ['民心', 'heart'], ['粮食', 'food'], ['兵力', 'military'], ['文化', 'culture'], ['声望', 'rep']];
   let h = '<div class="card3" style="margin-top:10px">';
-  h += '<p class="h">' + (msg.isWinner ? '胜利！' : '失败') + '</p>';
+  h += '<p class="h" style="color:' + (msg.isWinner ? 'var(--good)' : 'var(--bad)') + '">' + (msg.isWinner ? '🏆 胜利！' : '⚔ 惜败') + '</p>';
   h += '<p class="muted">' + (msg.message || '') + '</p>';
-  h += '<div style="margin:15px 0;padding:15px;background:var(--bg2);border-radius:8px">';
-  h += '<div style="display:flex;justify-content:space-around;align-items:center">';
-  h += '<div style="text-align:center"><div class="muted">我方国力</div><div style="font-size:22px;font-weight:bold;color:var(--gold2)">' + (myResult.powerScore || 0) + '</div></div>';
-  h += '<div style="font-size:16px;color:var(--muted)">VS</div>';
-  h += '<div style="text-align:center"><div class="muted">对手国力</div><div style="font-size:22px;font-weight:bold;color:var(--gold2)">' + (oppResult.powerScore || 0) + '</div></div>';
-  h += '</div></div>';
-  h += '<div style="text-align:center"><button class="btn gold" onclick="DE_PVP.showPanel()">返回大厅</button></div>';
+  h += '<div style="margin:14px 0;padding:12px;background:var(--bg2);border-radius:8px">';
+  h += '<div style="display:flex;justify-content:space-around;align-items:flex-end;margin-bottom:10px">';
+  h += '<div style="text-align:center"><div class="muted">' + myName + '</div><div class="muted" style="font-size:12px">国力</div><div style="font-size:26px;font-weight:bold;color:var(--gold2)">' + (myResult.powerScore || 0) + '</div></div>';
+  h += '<div style="font-size:18px;color:var(--muted)">VS</div>';
+  h += '<div style="text-align:center"><div class="muted">' + oppName + '</div><div class="muted" style="font-size:12px">国力</div><div style="font-size:26px;font-weight:bold;color:var(--gold2)">' + (oppResult.powerScore || 0) + '</div></div>';
   h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:6px 14px;font-size:13px;align-items:center">';
+  rows.forEach(([label, key]) => {
+   h += '<div class="muted" style="text-align:right;color:var(--good)">' + (mySnap[key] != null ? mySnap[key] : '--') + '</div>';
+   h += '<div class="muted" style="text-align:center">' + label + '</div>';
+   h += '<div class="muted" style="color:var(--warn)">' + (oppSnap[key] != null ? oppSnap[key] : '--') + '</div>';
+  });
+  h += '</div></div>';
+  h += '<div style="display:flex;gap:8px;justify-content:center">';
+  h += '<button class="btn gold" onclick="DE_PVP.afterGameReturn()">返回主菜单</button>';
+  h += '</div></div>';
   showModal('对战结束', h, true);
+ },
+ afterGameReturn() {
+  this.exitPvpMainGame();
+  this.gameStarted = false;
+  this.inMainGame = false;
+  closeModal();
+  setTimeout(() => this.showPanel(), 80);
  },
  createRoom() {
   if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { this.showNotification('请先连接到服务器', 'error'); return; }
@@ -5091,6 +5255,45 @@ const DE_PVP = {
   }
  }
 };
+
+// PvP 纪事页：对战胜利条件 + 双方六维对比（我方实时、对手来自对手快照）
+function buildPvpChronBlock() {
+ try {
+  const opp = (typeof DE_PVP !== 'undefined' && DE_PVP.opponentSnapshot) || null;
+  const myPower = (typeof S !== 'undefined' && typeof powerScore === 'function') ? powerScore() : 0;
+  const oppPower = (opp && opp.power) || 0;
+  const myName = (typeof DE_PVP !== 'undefined' && DE_PVP.playerDyn && DYNASTIES[DE_PVP.playerDyn]) ? DYNASTIES[DE_PVP.playerDyn].nm : '我方';
+  const oppName = (typeof DE_PVP !== 'undefined' && DE_PVP.opponentDyn && DYNASTIES[DE_PVP.opponentDyn]) ? DYNASTIES[DE_PVP.opponentDyn].nm : '对手';
+  const rows = [['国库','gold'],['民心','heart'],['粮食','food'],['兵力','military'],['文化','culture'],['声望','rep']];
+  let h = '<div class="card3" style="margin-top:10px">';
+  h += '<p class="h">⚔ 对战胜利条件</p>';
+  h += '<p class="muted" style="line-height:1.7">共 <b style="color:var(--gold2)">' + ((typeof DE_PVP!=='undefined'&&DE_PVP.totalTurns)||20) + '</b> 回合，每回合 60 秒。每回合结束比拼国力，<b style="color:var(--gold2)">20 回合后国力高者获胜</b>。断线或超时未结束回合者判负。</p>';
+  h += '</div>';
+  h += '<div class="card3" style="margin-top:10px"><p class="h">📊 双方国力对比　<span class="muted">第 ' + ((typeof DE_PVP!=='undefined'&&DE_PVP.turn)||1) + ' 回合</span></p>';
+  h += '<div style="display:flex;justify-content:space-around;align-items:center;margin:8px 0">';
+  h += '<div style="text-align:center"><div class="muted">' + myName + '</div><div style="font-size:24px;font-weight:bold;color:var(--good)">' + myPower + '</div></div>';
+  h += '<div style="font-size:16px;color:var(--muted)">VS</div>';
+  h += '<div style="text-align:center"><div class="muted">' + oppName + '</div><div style="font-size:24px;font-weight:bold;color:var(--warn)">' + (oppPower||'--') + '</div></div>';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:6px 14px;font-size:13px;align-items:center;margin-bottom:6px">';
+  rows.forEach(function(r){
+   const label=r[0], key=r[1];
+   const myV = (typeof S!=='undefined'&&S) ? Math.round(S[key]) : '--';
+   const oppV = (opp && opp[key] != null) ? opp[key] : '--';
+   h += '<div style="text-align:right;color:var(--good)">' + myV + '</div>';
+   h += '<div class="muted" style="text-align:center">' + label + '</div>';
+   h += '<div style="color:var(--warn)">' + oppV + '</div>';
+  });
+  h += '</div>';
+  h += '<p class="muted" style="font-size:12px;margin-top:6px">对手数值随其每回合上报实时更新；我方数值为当前实时国力。</p>';
+  h += '</div>';
+  h += '<div class="card3" style="margin-top:10px"><p class="h">📜 王朝纪事（共历 ' + ((typeof S!=='undefined'&&S)?S.year:0) + ' 载 · ' + ((typeof S!=='undefined'&&S)?S.era:'') + '）</p><div class="muted" style="line-height:1.85;max-height:40vh;overflow:auto">';
+  if (typeof S!=='undefined' && S && S.chron && S.chron.length) h += S.chron.slice().reverse().slice(0,200).join('<br>');
+  else h += '（暂无纪事）';
+  h += '</div></div>';
+  return h;
+ } catch (e) { return '<div class="card3"><p class="muted">对战信息加载中…</p></div>'; }
+}
 
 
 </script>
