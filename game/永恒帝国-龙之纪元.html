@@ -592,7 +592,7 @@ function seasonSeed(){const key='SEASON:'+isoWeekKey();const rng=mulberry32(hash
 
 function safe(v,d){v=Number(v);return isNaN(v)?(d==null?0:d):v;}
 
-function newGame(key,diffKey,seedIn){
+function newGame(key,diffKey,seedIn,opts){
 
  const d=DYNASTIES[key]||DYNASTIES.han;
 
@@ -642,9 +642,11 @@ function newGame(key,diffKey,seedIn){
 
  settings:{bgmVol:50,sfxVol:60,gameSpeed:'normal',theme:'minghuang',fontSize:'中',
 
- fx:true,autosave:15,guide:true,econDiff:'标准'}
+ fx:true,autosave:15,guide:true,econDiff:'标准'},
 
- };
+ realtimePvp:!!(opts&&opts.realtime), side:(opts&&opts.side)||'A', isNeutralDriver:((opts&&opts.side)||'A')==='A', twoFaction:!!((opts&&opts.twoFaction)||(opts&&opts.realtime))
+
+};
 
  // 初始人才
 
@@ -770,7 +772,60 @@ function minEff(b){return S.posts[b]?1.2:1;} // 该部有尚书则效率+20%
 
 function effFate(){return (S?S.fate:0)+((S&&S.mods&&S.mods.fate)||0);}
 
-function powerScore(){return Math.round(S.gold*1.5+S.food*0.03+S.pop*0.04+S.culture*0.5+S.rep*0.6+S.armies.me*0.05+S.heart*0.3+effFate()*0.4+(S.powerBonus||0));}
+function powerScore(){let base=S.gold*1.5+S.food*0.03+S.pop*0.04+S.culture*0.5+S.rep*0.6+S.armies.me*0.05+S.heart*0.3+effFate()*0.4+(S.powerBonus||0);// 权重标定（实测）：开局 15 城 / 驻军约 34 万，经济基数约 1826。
+// 取 城×80 + 驻军×0.002 → 沙盘项约 1888，与经营各占约一半：攻伐重要，朝廷经营不被淹没。
+// 每攻占一城约 +126（≈基数的 7%），累计占满对手 15 城可使国力接近翻倍。
+if(S.realtimePvp){const mine=S.nodes.filter(n=>n.owner==='me');base+=mine.length*80+mine.reduce((s,n)=>s+safe(n.troop,0),0)*0.002;}return Math.round(base);}
+
+/* ===== PvP 实时国战：绝对阵营 A/B/N <-> 本地 me/opponent/neutral 互转（仅 realtime 路径使用，单机不受影响） ===== */
+function absToLocal(a){return a==='N'?'neutral':(a===S.side?'me':'opponent');}
+function localToAbs(l){return l==='neutral'?'N':(l==='me'?S.side:(S.side==='A'?'B':'A'));}
+
+function checkAnnihilation(){
+ if(!S||!S.realtimePvp)return;
+ const opp=S.nodes.filter(n=>n.owner==='opponent').length;
+ if(opp===0){ sendAnnihilated(S.side); return; }
+ if(S.nodes.filter(n=>n.owner==='me').length===0){ sendAnnihilated(S.side==='A'?'B':'A'); }
+}
+function sendAnnihilated(winnerAbs){
+ if(!S||!S.realtimePvp)return;
+ // 灭国时可能还没提交过回合快照，先补发一次，避免结算面板国力显示 0
+ try{ const snap=(typeof DE_PVP!=='undefined'&&DE_PVP.buildSnapshot)?DE_PVP.buildSnapshot():null; if(snap) DE_PVP.send({type:'snapshot',snapshot:snap}); }catch(e){}
+ DE_PVP.send({type:'annihilated',winner:winnerAbs});
+}
+
+function attackCity(fromId,toId,troops,mode){
+ const tn=S.nodes.find(n=>n.id===toId);if(!tn)return;
+ if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.send({type:'attack',fromId,toId,troops,mode}); toast('⚔ 已向好友城池发兵…'); closeModal(); return; }
+ resolveBattle('me',fromId,toId,mode,troops);
+ if(S.realtimePvp) pushBattleResult([fromId,toId]);
+}
+function pushBattleResult(ids){
+ const nodes=ids.map(id=>{const n=S.nodes.find(x=>x.id===id);return {id,owner:localToAbs(n.owner),troop:Math.round(n.troop),def:Math.round(n.def)};});
+ DE_PVP.send({type:'battle_result',by:S.side,delta:{nodes}});
+}
+function pushNeutralMove(ids){
+ const nodes=ids.map(id=>{const n=S.nodes.find(x=>x.id===id);return {id,owner:localToAbs(n.owner),troop:Math.round(n.troop),def:Math.round(n.def)};});
+ DE_PVP.send({type:'neutral_move',delta:{nodes}});
+}
+function applySandboxDelta(d){
+ if(!S)return;
+ (d&&d.nodes||[]).forEach(x=>{const n=S.nodes.find(y=>y.id===x.id);if(n){n.owner=absToLocal(x.owner);n.troop=x.troop;n.def=x.def;}});
+ if(typeof renderSandbox==='function')renderSandbox();
+}
+function neutralAI(){
+ if(!S||!S.realtimePvp||!S.isNeutralDriver)return;
+ S.forces.filter(f=>f.neutral).forEach(f=>{
+  const mine=S.nodes.filter(n=>n.owner===f.id); if(!mine.length)return;
+  const from=pick(mine);
+  const nbs=(S.edges||[]).map(e=>e.a===from.id?e.b:(e.b===from.id?e.a:null)).filter(Boolean)
+   .map(id=>S.nodes.find(n=>n.id===id)).filter(n=>n&&n.owner!==f.id);
+  if(!nbs.length)return;
+  const to=pick(nbs); const troops=Math.round(from.troop*0.6);
+  resolveBattle(f.id,from.id,to.id,pick(['field','siege','naval']),troops);
+  pushNeutralMove([from.id,to.id]);
+ });
+}
 
 // 经济景气系数：国库≥50 繁荣+10%；0~10 拮据，征税/征兵-10%
 
@@ -1116,6 +1171,31 @@ function doBankrupt(msg){endGame('经济崩溃',msg);}
 
 function buildMap(){
 
+ // —— 双阵营实时国战分支（仅 S.realtimePvp；单机 10 势力逻辑完全不变）——
+ if(S&&S.realtimePvp){
+  const NEUTRAL_DEFS=[{id:'N1',name:'羌胡',color:'#9aa0a6',ai:true,neutral:true},{id:'N2',name:'百越',color:'#7d8a55',ai:true,neutral:true}];
+  const land=NODE_DEFS.filter(n=>!n.special);
+  const sorted=land.slice().sort((a,b)=>Math.atan2(a.y-54,a.x-54)-Math.atan2(b.y-54,b.x-54));
+  const neutralIds=new Set(sorted.slice(-2).map(n=>n.id));
+  // 先划出中立城，再把剩余城池对半分 —— 保证双方开局城数严格相等
+  const rest=sorted.filter(n=>!neutralIds.has(n.id));
+  const half=Math.floor(rest.length/2);
+  S.nodes=NODE_DEFS.map(n=>{
+   let owner;
+   if(n.special)owner='neutral';
+   else if(neutralIds.has(n.id))owner=(sorted.findIndex(x=>x.id===n.id)%2===0?'N1':'N2');
+   // 关键：双方视角必须相反。A 的 me=A半区 / opponent=B半区；B 反之。
+   // 这样 A 攻打的「opponent 城」在 B 端正是 B 的「me 城」，实时同步才成立。
+   else { const first=(rest.findIndex(x=>x.id===n.id)<half); owner=((S.side==='A')?first:!first)?'me':'opponent'; }
+   return {id:n.id,name:n.name,zhou:n.zhou,x:n.x,y:n.y,owner,special:!!n.special,pass:false,def:Math.floor(RNG()*31)+10,troop:Math.floor(RNG()*49001)+1000};
+  });
+  S.forces=[{id:'me',name:'大胤（你）',color:'#d4af37',ai:false},{id:'opponent',name:'好友阵营',color:'#e85d4a',ai:true},...NEUTRAL_DEFS].map(f=>({id:f.id,name:f.name,color:f.color,ai:f.ai,neutral:!!f.neutral,gold:ri(5000,30000),relation:{},peace:0,generals:[]}));
+  S.forces.forEach(f=>{if(f.id!=='me'){for(let i=0;i<ri(3,5);i++)f.generals.push(genOfficial('武').id);}});
+  S.starGens=[];
+  S.forces.forEach(f=>{if(f.id==='me')return;const own=S.nodes.filter(n=>n.owner===f.id);if(!own.length)return;const cnt=own.length>=4?2:1;const sortedOwn=own.slice().sort((a,b)=>((b.pass?1:0)-(a.pass?1:0))||(b.def-a.def));for(let i=0;i<cnt&&i<sortedOwn.length;i++){const c=sortedOwn[i];const star={id:'sg_'+f.id+'_'+i,nm:genName(),lead:75+Math.floor(RNG()*21),might:ri(70,95),wit:ri(60,90),force:f.id,city:c.id,loyal:ri(70,95),trs:[pick(OFF_TRAITS).nm,pick(OFF_TRAITS).nm]};S.starGens.push(star);c.def+=Math.floor(star.lead/4);c.troop+=2000+Math.floor(RNG()*3001);}});
+  buildEdges();return;
+ }
+
  S.nodes=NODE_DEFS.map(n=>({id:n.id,name:n.name,zhou:n.zhou,x:n.x,y:n.y,owner:n.owner,special:!!n.special,pass:false,def:Math.floor(RNG()*31)+10,troop:Math.floor(RNG()*49001)+1000}));
 
  S.forces=FORCE_DEFS.map(f=>({id:f.id,name:f.name,color:f.color,ai:f.ai,gold:ri(5000,30000),relation:{},peace:0,generals:[]}));
@@ -1264,11 +1344,11 @@ function resolveBattle(afid,fromId,toId,mode,troops,genId){
 
  if(prevOwner!==afid)afterCityFall(tn,false); // 守方名将突围转进他城
 
- if(isMe){S.armies.me=Math.max(0,safe(S.armies.me,0)-troops);S.rep+=2;log('攻克 '+tn.name+'！');toast('⚔ 攻克 '+tn.name);}else{toast('⚔ '+of.name+' 攻取 '+tn.name);}
+ if(isMe){S.armies.me=Math.max(0,safe(S.armies.me,0)-troops);S.rep+=2;log('攻克 '+tn.name+'！');toast('⚔ 攻克 '+tn.name); if(S.realtimePvp)checkAnnihilation();}else{toast('⚔ '+of.name+' 攻取 '+tn.name);}
 
  if(gen&&Math.random()<0.15)toast('（'+gen.nm+' 威名远扬）');
 
- if(prevOwner==='me'&&!S.nodes.some(n=>n.owner==='me')){log('疆土尽失，'+S.era+' 王朝落幕。');endGame('战败','城破国灭，山河易主');return;}
+ if(prevOwner==='me'&&!S.nodes.some(n=>n.owner==='me')){ if(S.realtimePvp){ sendAnnihilated(S.side==='A'?'B':'A'); return; } log('疆土尽失，'+S.era+' 王朝落幕。');endGame('战败','城破国灭，山河易主');return;}
 
  }else{
 
@@ -1295,6 +1375,7 @@ function sandboxAI(){
  S.forces.forEach(f=>{
 
  if(!f.ai)return;
+ if(S.realtimePvp){ if(f.id==='opponent')return; if(f.neutral&&!S.isNeutralDriver)return; }
 
  const acts=Math.max(1,Math.round(ri(1,2)*S.aiK)); // 简单(0.5)≈1次、普通(1)1~2次、地狱(2)2~4次、国力过强时 aiK 放大→施压雪球流
 
@@ -1900,7 +1981,7 @@ function renderSandbox(){
 
  h+='<div class="row" style="margin-top:10px">';
 
- S.forces.forEach(f=>{const cnt=S.nodes.filter(n=>n.owner===f.id).length;if(f.id!=='me'&&cnt===0)return;const rel=f.id==='me'?'★ 本朝':(f.relation['me']==='盟'?'🤝 结盟':(f.relation['me']==='藩'?'🏮 藩属':(f.relation['me']==='敌'?'⚔ 敌对':'⚔ 争霸')));const stars=(S.starGens||[]).filter(x=>x.force===f.id);h+='<div class="card3" style="flex:1;min-width:140px;border-color:'+hexA(f.color,.55)+'"><div class="h" style="color:'+f.color+'"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+f.color+';margin-right:4px"></span>'+f.name+'</div><div class="muted">'+rel+' ｜ 城 '+cnt+' ｜ 兵 '+fmt(S.nodes.filter(n=>n.owner===f.id).reduce((s,n)=>s+safe(n.troop,0),0))+'</div>'+(stars.length?'<div class="muted" style="font-size:11px;color:#ff6b5a">🎖 '+stars.map(x=>x.nm+'（统'+x.lead+'·'+((S.nodes.find(n=>n.id===x.city)||{name:'?'}).name)+'）').join('，')+'</div>':'')+'</div>';});
+ S.forces.forEach(f=>{const cnt=S.nodes.filter(n=>n.owner===f.id).length;if(f.id!=='me'&&cnt===0)return;const rel=f.id==='me'?'★ 本朝':(f.relation['me']==='盟'?'🤝 结盟':(f.relation['me']==='藩'?'🏮 藩属':(f.relation['me']==='敌'?'⚔ 敌对':'⚔ 争霸')));const stars=(S.starGens||[]).filter(x=>x.force===f.id);h+='<div class="card3" style="flex:1;min-width:140px;border-color:'+hexA(f.color,.55)+'"><div class="h" style="color:'+f.color+'"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+f.color+';margin-right:4px"></span>'+(f.neutral?'🜂第三方 '+f.name:f.name)+'</div><div class="muted">'+rel+' ｜ 城 '+cnt+' ｜ 兵 '+fmt(S.nodes.filter(n=>n.owner===f.id).reduce((s,n)=>s+safe(n.troop,0),0))+'</div>'+(stars.length?'<div class="muted" style="font-size:11px;color:#ff6b5a">🎖 '+stars.map(x=>x.nm+'（统'+x.lead+'·'+((S.nodes.find(n=>n.id===x.city)||{name:'?'}).name)+'）').join('，')+'</div>':'')+'</div>';});
 
  h+='</div>';
 
@@ -3237,6 +3318,8 @@ function beginSiege(){
  if(cost&&S.gold<cost){toast('国库不足以支撑离间（需'+cost+'万两）');return;}
 
  if(!spendAP())return;if(cost)S.gold-=cost;
+
+ if(S.realtimePvp&&to.owner==='opponent'){ attackCity(from.id,to.id,amt,strat==='围城'?'siege':'field'); return; }
 
  const df=S.forces.find(f=>f.id===to.owner);const sgen=starAt(to.id);
 
@@ -4797,8 +4880,24 @@ const DE_PVP = {
     this.showGameOver(msg);
     break;
    case 'error': this.showNotification('错误: ' + msg.message, 'error'); break;
+   case 'attack': this.onRemoteAttack(msg); break;
+   case 'battle_result': this.onBattleResult(msg); break;
+   case 'neutral_move': this.onNeutralMove(msg); break;
+   case 'annihilated': this.onAnnihilated(msg); break;
+   case 'neutral_driver': this.onNeutralDriver(msg); break;
   }
  },
+ send(obj){ if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(obj)); },
+ onRemoteAttack(msg){
+  if(!S||!S.realtimePvp)return;
+  const to=S.nodes.find(n=>n.id===msg.toId); if(!to||to.owner!=='me')return;
+  resolveBattle('opponent',msg.fromId,msg.toId,msg.mode||'field',msg.troops);
+  pushBattleResult([msg.fromId,msg.toId]);
+ },
+ onBattleResult(msg){ applySandboxDelta(msg.delta); },
+ onNeutralMove(msg){ applySandboxDelta(msg.delta); if(msg.delta&&msg.delta.note)toast(msg.delta.note); },
+ onAnnihilated(msg){ if(msg&&msg.results)this.showGameOver(msg); },
+ onNeutralDriver(msg){ if(!S)return; S.isNeutralDriver=true; if(this.neutralTimer)clearInterval(this.neutralTimer); this.neutralTimer=setInterval(()=>neutralAI(),8000); },
  startTurnTimer(remaining) {
   this.stopTurnTimer();
   this.turnRemaining = remaining;
@@ -4829,13 +4928,18 @@ const DE_PVP = {
   closeModal();
   // 用服务器给的共享种子 + 各自朝代开局，双方沙盘完全一致
   const dyn = this.playerDyn;
-  newGame(dyn, 'normal', this.pvpSeed);
+  newGame(dyn, 'normal', this.pvpSeed, {realtime:true, side:msg.side});
   if (S && S.settings) S.settings.guide = false; // 关闭单机教程干扰
   showScreen('court');
   this.renderPvpStatusBar();
   this.hideNextYearBtn();
   this.startClientTurnTimer(msg.remaining || 60000);
   this.showNotification('⚔ 对战开始！第 1/' + this.totalTurns + ' 回合 — 经营你的帝国，20 回合后比拼国力！', 'success');
+
+  if (S && S.realtimePvp && S.isNeutralDriver) {
+   if (this.neutralTimer) clearInterval(this.neutralTimer);
+   this.neutralTimer = setInterval(() => neutralAI(), 8000);
+  }
  },
  onPvpTurnStart(msg) {
   this.turn = msg.turn;
@@ -4922,6 +5026,7 @@ const DE_PVP = {
    '<span class="muted">⏱ <b id="pvp_cltimer" style="color:var(--gold2)">' + Math.ceil(this.clientRemaining / 1000) + '秒</b></span>' +
    '<span class="muted">我方国力 <b style="color:var(--good)">' + myPower + '</b></span>' +
    '<span class="muted">' + oppName + '国力 <b style="color:var(--warn)">' + (oppPower || '--') + '</b></span>' +
+   (S&&S.realtimePvp?'<span class="muted">🏯 我 '+S.nodes.filter(n=>n.owner==='me').length+' ｜ '+oppName+' '+S.nodes.filter(n=>n.owner==='opponent').length+' ｜ 中立 '+S.nodes.filter(n=>n.owner==='neutral').length+'</span>':'') +
    '<button class="btn gold sm" id="pvp_endturn_btn" onclick="DE_PVP.endTurn()">结束回合 ⏭</button>';
  },
  updatePvpTimer() {
@@ -4953,6 +5058,7 @@ const DE_PVP = {
  },
  exitPvpMainGame() {
   this.inMainGame = false;
+  if (this.neutralTimer) { clearInterval(this.neutralTimer); this.neutralTimer = null; }
   this.stopClientTurnTimer();
   this.removePvpStatusBar();
  },
