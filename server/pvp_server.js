@@ -128,7 +128,54 @@ function handleMessage(playerId, msg, ws) {
     case 'ping':
       ws.send(JSON.stringify({ type: 'pong', time: Date.now() }));
       break;
+    // ===== 实时国战：沙盘攻伐 / 中立行动 / 灭国仲裁（纯中继，服务器不持有沙盘状态）=====
+    case 'attack':
+      relayToOpponent(playerId, msg);
+      break;
+    case 'battle_result':
+      relayToOpponent(playerId, msg);
+      break;
+    case 'neutral_move':
+      relayToOpponent(playerId, msg);
+      break;
+    case 'annihilated':
+      handleAnnihilated(playerId, msg);
+      break;
   }
+}
+
+// 把消息原样转发给房间内的另一名玩家（实时国战用）
+function relayToOpponent(playerId, msg) {
+  const player = users.get(playerId);
+  if (!player || !player.room) return;
+  const room = rooms.get(player.room);
+  if (!room) return;
+  room.players.forEach((p, pid) => {
+    if (pid === playerId) return;
+    const u = users.get(pid);
+    if (u?.ws) {
+      try { u.ws.send(JSON.stringify(msg)); } catch (e) {}
+    }
+  });
+}
+
+// 灭国即胜：某一方城池归零 → 直接按给定 winner 结束，优先于 20 回合国力比
+function handleAnnihilated(playerId, msg) {
+  const player = users.get(playerId);
+  if (!player || !player.room) return;
+  const room = rooms.get(player.room);
+  if (!room || room.state !== 'playing') return;
+
+  // msg.winner 是绝对阵营 'A'/'B'；找不到对应玩家则回退为上报方的对手
+  let winnerPid = null, loserPid = null;
+  room.players.forEach((p, pid) => {
+    if (p.side === msg.winner) winnerPid = pid;
+    else loserPid = pid;
+  });
+  if (!winnerPid) { winnerPid = loserPid; loserPid = playerId; }
+
+  console.log(`[+] 灭国结束: 房间 ${room.id}, winner=${winnerPid.slice(0, 8)} (${msg.winner})`);
+  endGame(room.id, 'annihilated', winnerPid);
 }
 
 function createRoom(playerId, msg) {
@@ -343,7 +390,11 @@ function startGame(roomId) {
   });
 
   // 发送游戏开始消息：下发共享种子，双方各自用主游戏开局（沙盘一致）
+  // side: 房主（先加入者）= A，加入者 = B —— 客户端据此把本地 me/opponent 映射为绝对阵营
+  let sideIdx = 0;
   room.players.forEach((p, pid) => {
+    const side = (sideIdx++ === 0) ? 'A' : 'B';
+    p.side = side;
     const player = users.get(pid);
     if (player?.ws) {
       player.ws.send(JSON.stringify({
@@ -353,6 +404,7 @@ function startGame(roomId) {
         turn: 1,
         totalTurns: CONFIG.TOTAL_TURNS,
         seed: room.sharedSeed,
+        side: side,
         opponentDynasty: getOpponentDynasty(room, pid),
         // 兼容旧客户端（仍走独立面板）的兜底空 stats，新客户端不依赖
         stats: { gold: 0, food: 0, pop: 0, culture: 0, fame: 0, military: 0, heart: 0, authority: 0, law: 0, legitimacy: 0 },
@@ -566,8 +618,10 @@ function endGame(roomId, reason, winnerId = null) {
         isWinner: winner === pid,
         results: results,
         message: winner === pid
-          ? (reason === 'timeout' ? '20 回合结束，你的国力更高，获胜！' : '对手认输，恭喜获胜！')
-          : (reason === 'timeout' ? '20 回合结束，国力略逊一筹。' : '你认输了。')
+          ? (reason === 'annihilated' ? '🏆 你已攻灭对手全部城池，灭国获胜！'
+            : reason === 'timeout' ? '20 回合结束，你的国力更高，获胜！' : '对手认输，恭喜获胜！')
+          : (reason === 'annihilated' ? '💀 你的城池已尽数沦陷，被灭国。'
+            : reason === 'timeout' ? '20 回合结束，国力略逊一筹。' : '你认输了。')
       }));
     }
   });
