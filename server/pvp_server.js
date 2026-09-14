@@ -173,10 +173,11 @@ function createRoom(playerId, msg) {
 
 function joinRoom(playerId, msg) {
   const player = users.get(playerId);
-  const room = rooms.get(msg.roomId);
+  // 统一转大写再查，与 createRoom 的 toUpperCase 保持一致（避免大小写不一致导致"房间不存在"）
+  const room = rooms.get(String(msg.roomId || '').trim().toUpperCase());
   
   if (!room) {
-    player.ws.send(JSON.stringify({ type: 'error', message: '房间不存在' }));
+    player.ws.send(JSON.stringify({ type: 'error', message: '房间不存在，请核对房间号（房主可在对战面板查看并复制）' }));
     return;
   }
   
