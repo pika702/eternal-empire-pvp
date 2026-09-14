@@ -4708,7 +4708,7 @@ const DE_PVP = {
   if (!this.serverUrl) { alert('请先设置服务器地址'); return; }
   this.showNotification('正在连接 ' + this.serverUrl + ' ...', 'info');
   try { this.ws = new WebSocket(this.serverUrl); } catch (e) { this.showNotification('连接失败: ' + e.message, 'error'); return; }
-  this.ws.onopen = () => { this.showNotification('已连接到对战服务器', 'success'); this.renderPanel(); };
+  this.ws.onopen = () => { this.showNotification('已连接到对战服务器', 'success'); };
   this.ws.onmessage = (event) => { try { this.handleMessage(JSON.parse(event.data)); } catch (e) {} };
   this.ws.onerror = (err) => { this.showNotification('连接错误，请检查服务器地址或网络', 'error'); };
   this.ws.onclose = (event) => {
@@ -4727,9 +4727,15 @@ const DE_PVP = {
     if (this.serverVersion < 2) {
       this.showNotification('警告：当前服务器是旧版（30秒刷分模式），与回合制客户端不匹配。请房主更新服务器后再联机。', 'error');
     }
+    // 收到服务器版本信息后再渲染面板，避免 onopen 先渲染导致版本显示错误
+    this.renderPanel();
     break;
-   case 'room_created': this.currentRoom = msg.roomId; this.showNotification('房间创建成功: ' + msg.roomId, 'success'); break;
-   case 'joined': this.showNotification(msg.message, 'success'); break;
+   case 'room_created': this.currentRoom = msg.roomId; this.showNotification('房间创建成功: ' + msg.roomId, 'success'); this.renderPanel(); break;
+   case 'joined':
+    if (msg.roomId) this.currentRoom = msg.roomId;
+    this.showNotification(msg.message, 'success');
+    this.renderPanel();
+    break;
    case 'ready_changed':
     this.isReady = msg.ready;
     this.updateReadyButton();
@@ -4902,15 +4908,24 @@ const DE_PVP = {
  },
  createRoom() {
   if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { this.showNotification('请先连接到服务器', 'error'); return; }
-  const roomId = prompt('请输入房间ID（留空自动生成）：', 'DE-' + Date.now().toString(36).toUpperCase());
-  if (!roomId) return;
+  const input = prompt('请输入房间ID（留空或直接点确定 = 自动生成）：', 'DE-' + Date.now().toString(36).toUpperCase());
+  if (input === null) return; // 用户点取消
+  // 留空自动生成，避免"点了确定却什么都没发生"
+  const roomId = (input.trim() || 'DE-' + Date.now().toString(36)).toUpperCase();
   this.ws.send(JSON.stringify({ type: 'create_room', roomId: roomId, roomName: '永恒帝国对战房' }));
  },
  joinRoom() {
   if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { this.showNotification('请先连接到服务器', 'error'); return; }
-  const roomId = prompt('请输入房间ID：');
+  const roomId = prompt('请输入好友发给你的房间号（不区分大小写）：');
   if (!roomId) return;
-  this.ws.send(JSON.stringify({ type: 'join_room', roomId: roomId }));
+  this.ws.send(JSON.stringify({ type: 'join_room', roomId: roomId.trim().toUpperCase() }));
+ },
+ copyRoomId() {
+  if (!this.currentRoom) { this.showNotification('还没有加入房间', 'error'); return; }
+  const text = '【永恒帝国·龙之纪元】对战房间号: ' + this.currentRoom + '\n打开 ' + location.origin + ' → 实时对战 → 连接在线服务器 → 加入房间，输入房间号即可开战！';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+   navigator.clipboard.writeText(text).then(() => this.showNotification('房间号已复制，发给好友吧！', 'success')).catch(() => this.fallbackCopy(text));
+  } else { this.fallbackCopy(text); }
  },
  toggleReady() {
   if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -4964,7 +4979,10 @@ const DE_PVP = {
   h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-bottom:12px">';
   h += '<span class="muted">服务器: <b style="color:var(--gold2)">' + serverLabel + '</b></span>';
   h += '<span class="muted">状态: <b style="color:' + (this.serverVersion >= 2 ? 'var(--good)' : 'var(--bad)') + '">' + (this.serverVersion >= 2 ? '已连接·回合制v2' : '已连接·旧版v1不兼容') + '</b></span>';
-  h += '<span class="muted">房间: <b>' + roomId + '</b></span>';
+  h += '<span class="muted">房间: <b style="color:var(--gold2);letter-spacing:1px">' + roomId + '</b></span>';
+  if (this.currentRoom) {
+   h += '<button class="btn gold sm" onclick="DE_PVP.copyRoomId()">复制房间号</button>';
+  }
   h += '<span class="muted">准备: <b id="pvp_ready_btn">' + readyState + '</b></span>';
   h += '</div>';
   h += '<div class="row" style="gap:8px;margin-bottom:12px; flex-wrap:wrap">';
