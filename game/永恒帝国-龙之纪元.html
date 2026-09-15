@@ -798,7 +798,7 @@ function sendAnnihilated(winnerAbs){
 
 function attackCity(fromId,toId,troops,mode){
  const tn=S.nodes.find(n=>n.id===toId);if(!tn)return;
- if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.send({type:'attack',fromId,toId,troops,mode}); toast('⚔ 已向好友城池发兵…'); closeModal(); return; }
+ if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.sendAttack(fromId,toId,troops,mode); toast('⚔ 已向好友城池发兵…'); closeModal(); return; }
  resolveBattle('me',fromId,toId,mode,troops);
  if(S.realtimePvp) pushBattleResult([fromId,toId]);
 }
@@ -4898,6 +4898,23 @@ const DE_PVP = {
   }
  },
  send(obj){ if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(obj)); },
+ // 发起对好友城的攻击：记录待决攻击，若守方超时未回传（对方还没进主局/掉线/丢包），
+ // 攻方本地兜底结算并广播结果 —— 保证攻城指令永远不会"石沉大海"（真机"点了没反应"的根治手段）
+ sendAttack(fromId,toId,troops,mode){
+  this.pendingAttack={fromId,toId,troops,mode};
+  this.send({type:'attack',fromId,toId,troops,mode});
+  if(this.atkFallbackTimer)clearTimeout(this.atkFallbackTimer);
+  this.atkFallbackTimer=setTimeout(()=>{
+   if(!this.pendingAttack)return;
+   const pa=this.pendingAttack; this.pendingAttack=null; this.atkFallbackTimer=null;
+   if(!S||!S.realtimePvp)return;
+   toast('⚠ 对手未响应，已按本地图鉴结算');
+   try{
+    resolveBattle('me',pa.fromId,pa.toId,pa.mode||'field',pa.troops);
+    if(typeof pushBattleResult==='function')pushBattleResult([pa.fromId,pa.toId]);
+   }catch(e){}
+  },4000);
+ },
  onRemoteAttack(msg){
   if(!S||!S.realtimePvp)return;
   const to=S.nodes.find(n=>n.id===msg.toId); if(!to)return;
@@ -4907,7 +4924,12 @@ const DE_PVP = {
   resolveBattle('opponent',msg.fromId,msg.toId,msg.mode||'field',msg.troops);
   pushBattleResult([msg.fromId,msg.toId]);
  },
- onBattleResult(msg){ applySandboxDelta(msg.delta); },
+ onBattleResult(msg){
+  // 收到守方回传 → 撤销攻方兜底定时器，避免重复结算
+  this.pendingAttack=null;
+  if(this.atkFallbackTimer){ clearTimeout(this.atkFallbackTimer); this.atkFallbackTimer=null; }
+  applySandboxDelta(msg.delta);
+ },
  onNeutralMove(msg){ applySandboxDelta(msg.delta); if(msg.delta&&msg.delta.note)toast(msg.delta.note); },
  onAnnihilated(msg){ if(msg&&msg.results)this.showGameOver(msg); },
  onNeutralDriver(msg){ if(!S)return; S.isNeutralDriver=true; neutralAI(); },
@@ -5073,6 +5095,8 @@ const DE_PVP = {
  exitPvpMainGame() {
   this.inMainGame = false;
   if (this.neutralTimer) { clearInterval(this.neutralTimer); this.neutralTimer = null; }
+  if (this.atkFallbackTimer) { clearTimeout(this.atkFallbackTimer); this.atkFallbackTimer = null; }
+  this.pendingAttack = null;
   this.stopClientTurnTimer();
   this.removePvpStatusBar();
  },
