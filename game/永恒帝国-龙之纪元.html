@@ -2428,8 +2428,8 @@ function rotateHarem(){
 
 function gameOver(){endGame('驾崩无嗣','先帝崩而储位空悬，朝野分崩，'+S.era+' 王朝就此落幕');}
 
-// 随机事件频率：25%/回合 → 平均每 4 回合出现一次（符合"3~5 回合一遇"的设计预期；旧值 0.5 约每 2 回合一次，过于频繁）
-function maybeEvent(){if(Math.random()<0.25){const evs=[
+// 随机事件频率：用户要求「每回合都出现」（2026-09-16 由 25%/回合 调整为必现；事件本身仍随机抽取种类）
+function maybeEvent(){if(true){const evs=[
 
  {k:'祥瑞',t:'天降祥瑞',fn:()=>{const h=ri(2,8);S.heart=clamp(S.heart+h,0,S.heartCap);log('天降祥瑞，民忠+'+h+'。');return '瑞雪兆丰，万民称颂，民忠 +'+h;}},
 
@@ -3327,7 +3327,9 @@ function beginSiege(){
 
  if(!spendAP())return;if(cost)S.gold-=cost;
 
- if(S.realtimePvp&&to.owner==='opponent'){ attackCity(from.id,to.id,amt,strat==='围城'?'siege':'field'); return; }
+ // 实时国战：所有出征（含中立城）一律走一次性结算 + 同步，绝不开启本地持久攻城战(S.siege)
+ // —— 旧写法只在 to.owner==='opponent' 时走这里；打中立城会留一个永不同步的本地攻城状态 → 失同步
+ if(S.realtimePvp){ attackCity(from.id,to.id,amt,strat==='围城'?'siege':'field'); return; }
 
  const df=S.forces.find(f=>f.id===to.owner);const sgen=starAt(to.id);
 
@@ -4898,7 +4900,10 @@ const DE_PVP = {
  send(obj){ if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(obj)); },
  onRemoteAttack(msg){
   if(!S||!S.realtimePvp)return;
-  const to=S.nodes.find(n=>n.id===msg.toId); if(!to||to.owner!=='me')return;
+  const to=S.nodes.find(n=>n.id===msg.toId); if(!to)return;
+  // 注意：不再校验 to.owner==='me'。若因偶发失同步导致本地归属对不上就 return，
+  // 攻方的指令会被静默丢弃、永远收不到回传 —— 这正是"好友端/房主端不能进攻"的现象。
+  // 改为无论如何都结算并回传真实结果，delta 会顺带把这两座城重新对齐。
   resolveBattle('opponent',msg.fromId,msg.toId,msg.mode||'field',msg.troops);
   pushBattleResult([msg.fromId,msg.toId]);
  },
