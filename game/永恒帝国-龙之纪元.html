@@ -647,7 +647,10 @@ function newGame(key,diffKey,seedIn,opts){
 
  fx:true,autosave:15,guide:true,econDiff:'标准'},
 
- realtimePvp:!!(opts&&opts.realtime), side:(opts&&opts.side)||'A', isNeutralDriver:((opts&&opts.side)||'A')==='A', twoFaction:!!((opts&&opts.twoFaction)||(opts&&opts.realtime))
+ realtimePvp:!!(opts&&opts.realtime), side:(opts&&opts.side)||'A', isNeutralDriver:((opts&&opts.side)||'A')==='A', twoFaction:!!((opts&&opts.twoFaction)||(opts&&opts.realtime)),
+
+ // 中立结盟系统（仅双阵营实时国战使用）：donation=按中立id累计捐献；allied=中立id→绝对阵营('A'/'B')
+ donation:{}, allied:{}
 
 };
 
@@ -818,6 +821,8 @@ function pushNeutralMove(ids){
 function applySandboxDelta(d){
  if(!S)return;
  (d&&d.nodes||[]).forEach(x=>{const n=S.nodes.find(y=>y.id===x.id);if(n){n.owner=absToLocal(x.owner);n.troop=x.troop;n.def=x.def;}});
+ // 结盟状态同步（绝对阵营，双端一致）
+ if(d&&d.ally&&d.ally.nid){S.allied=S.allied||{};S.allied[d.ally.nid]=d.ally.side;}
  if(typeof renderSandbox==='function')renderSandbox();
 }
 function neutralAI(){
@@ -828,9 +833,14 @@ function neutralAI(){
  S.forces.filter(f=>f.neutral).forEach(f=>{
   const mine=S.nodes.filter(n=>n.owner===f.id); if(!mine.length)return;
   const from=pick(mine);
-  const nbs=(S.edges||[]).map(e=>e.a===from.id?e.b:(e.b===from.id?e.a:null)).filter(Boolean)
-   .map(id=>S.nodes.find(n=>n.id===id)).filter(n=>n&&n.owner!==f.id);
+  // 结盟保护：已与我方结盟的中立不再进攻我方，优先攻击对方阵营
+  const allyAbs=(S.allied&&S.allied[f.id])||null;
+  const allyLocal=allyAbs?(allyAbs===S.side?'me':'opponent'):null;
+  const enemyLocal=allyAbs?(allyAbs===S.side?'opponent':'me'):null;
+  let nbs=(S.edges||[]).map(e=>e.a===from.id?e.b:(e.b===from.id?e.a:null)).filter(Boolean)
+   .map(id=>S.nodes.find(n=>n.id===id)).filter(n=>n&&n.owner!==f.id&&!(allyLocal&&n.owner===allyLocal));
   if(!nbs.length)return;
+  if(allyLocal){const only=nbs.filter(n=>n.owner===enemyLocal);if(only.length)nbs=only;}
   const to=pick(nbs); const troops=Math.round(from.troop*0.6);
   resolveBattle(f.id,from.id,to.id,pick(['field','siege','naval']),troops);
   pushNeutralMove([from.id,to.id]);
@@ -1203,6 +1213,8 @@ function buildMap(){
   S.forces.forEach(f=>{if(f.id!=='me'){for(let i=0;i<ri(3,5);i++)f.generals.push(genOfficial('武').id);}});
   S.starGens=[];
   S.forces.forEach(f=>{if(f.id==='me')return;const own=S.nodes.filter(n=>n.owner===f.id);if(!own.length)return;const cnt=own.length>=4?2:1;const sortedOwn=own.slice().sort((a,b)=>((b.pass?1:0)-(a.pass?1:0))||(b.def-a.def));for(let i=0;i<cnt&&i<sortedOwn.length;i++){const c=sortedOwn[i];const star={id:'sg_'+f.id+'_'+i,nm:genName(),lead:75+Math.floor(RNG()*21),might:ri(70,95),wit:ri(60,90),force:f.id,city:c.id,loyal:ri(70,95),trs:[pick(OFF_TRAITS).nm,pick(OFF_TRAITS).nm]};S.starGens.push(star);c.def+=Math.floor(star.lead/4);c.troop+=2000+Math.floor(RNG()*3001);}});
+  // 记录中立城「基兵」，用于游说捐献扩军的上限（+50% 基兵）
+  S.nodes.forEach(n=>{if(n.owner==='N1'||n.owner==='N2'||n.owner==='neutral')n.baseTroop=n.troop;});
   buildEdges();return;
  }
 
@@ -1336,10 +1348,15 @@ function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
 // 只沿连线判定邻敌（不再按直线距离，关口价值因此体现）
 
 function enemyNeighbors(fid){const own=S.nodes.filter(n=>n.owner===fid);const out=[];own.forEach(n=>{neighborsOf(n.id).forEach(m=>{if(m&&m.owner!==fid&&m.owner!=='neutral'&&out.indexOf(m)<0)out.push(m);});});return out;}
+// 目标城是否「可被进攻的阵营」：好友阵营 + 中立势力(N1羌胡/N2百越) + 特殊中立城
+function isEnemyOwner(o){return o==='opponent'||o==='N1'||o==='N2'||o==='neutral';}
+// 该中立是否已与我方结盟（盟友不可攻击）
+function isAlliedToMe(o){return (o==='N1'||o==='N2')&&S&&S.allied&&S.allied[o]===S.side;}
 // 进攻可达判定（方案B）：仅当目标城与出击城有 S.edges 路线相连、且目标为敌/中立时，才可进攻；禁止隔山打牛
 function canAttackViaRoute(from,to){
   if(!from||!to)return false;
-  if(to.owner!=='opponent'&&to.owner!=='neutral')return false;
+  if(!isEnemyOwner(to.owner))return false;
+  if(isAlliedToMe(to.owner))return false;
   return (S.edges||[]).some(e=>(e.a===from.id&&e.b===to.id)||(e.b===from.id&&e.a===to.id));
 }
 
@@ -1523,7 +1540,8 @@ function selNode(id){const n=S.nodes.find(x=>x.id===id);if(!n)return;
  if(fromNode){
    if(canAttackViaRoute(fromNode,n)){toNode=n;showBattlePanel(fromNode,toNode);return;}
    const d=Math.round(dist(fromNode,n));
-   if(n.owner==='opponent'||n.owner==='neutral'){
+   if(isAlliedToMe(n.owner)){toast('🤝 '+n.name+' 已与我方结盟，不可进攻盟友。');renderSandbox();return;}
+   if(isEnemyOwner(n.owner)){
      // 若当前基地打不到，但另有我方城可打到，给出明确引导（避免玩家懵逼）
      const alt=S.nodes.filter(m=>m.owner==='me').find(m=>canAttackViaRoute(m,n));
      if(alt){toast('⚠ '+n.name+' 与「'+fromNode.name+'」不相邻，可从「'+alt.name+'」出征（点击该城再点这里）');}
@@ -1536,7 +1554,61 @@ function selNode(id){const n=S.nodes.find(x=>x.id===id);if(!n)return;
 
 }
 
-function showNodePanel(n){const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const fn=f?f.name:'中立';const gid=S.garrison?S.garrison[n.id]:null;const gname=gid?((S.officials.find(o=>o.id===gid)||{}).nm):null;let h='<p><b class="gold2">'+n.name+'</b>（'+n.zhou+'）　归属：<b style="color:'+fc+'">'+fn+'</b></p>';h+='<p class="muted">驻军 '+fmt(safe(n.troop,0))+'　防御 '+safe(n.def,10)+(n.special?'　⚑特殊区域':'')+(gname?'　<b style="color:#ffcf6b">守将：'+gname+'（防+30%）</b>':'');h+='</p>';if(n.pass)h+='<p style="color:#ffcf6b">⚷ <b>重要关口</b>：守住则扼敌咽喉，失守则门户洞开</p>';if(n.owner==='me'){h+='<div class="row"><button class="btn gold" onclick="selEnemyFrom(\''+n.id+'\')">选择此城出征</button><button class="btn" onclick="openCityManage()">兵力管理(加兵/转移/守将)</button><button class="btn" onclick="cedeCity(\''+n.id+'\')">割地求和</button></div>';}else if((n.owner==='opponent'||n.owner==='neutral')){const alt=S.nodes.filter(m=>m.owner==='me').find(m=>canAttackViaRoute(m,n));if(alt)h+='<p style="color:#ff7b7b">⚔ 可从「'+alt.name+'」出征进攻此城（先点选该城）</p>';}showModal('城池·'+n.name,h);}
+function showNodePanel(n){const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const fn=f?f.name:'中立';const gid=S.garrison?S.garrison[n.id]:null;const gname=gid?((S.officials.find(o=>o.id===gid)||{}).nm):null;let h='<p><b class="gold2">'+n.name+'</b>（'+n.zhou+'）　归属：<b style="color:'+fc+'">'+fn+'</b></p>';h+='<p class="muted">驻军 '+fmt(safe(n.troop,0))+'　防御 '+safe(n.def,10)+(n.special?'　⚑特殊区域':'')+(gname?'　<b style="color:#ffcf6b">守将：'+gname+'（防+30%）</b>':'');h+='</p>';if(n.pass)h+='<p style="color:#ffcf6b">⚷ <b>重要关口</b>：守住则扼敌咽喉，失守则门户洞开</p>';if(n.owner==='me'){h+='<div class="row"><button class="btn gold" onclick="selEnemyFrom(\''+n.id+'\')">选择此城出征</button><button class="btn" onclick="openCityManage()">兵力管理(加兵/转移/守将)</button><button class="btn" onclick="cedeCity(\''+n.id+'\')">割地求和</button></div>';}else if(isAlliedToMe(n.owner)){h+='<p style="color:#5fbf7a">🤝 与我方结盟的中立势力：不会进攻我方，也不会被我方进攻。</p>';}else if(isEnemyOwner(n.owner)){const alt=S.nodes.filter(m=>m.owner==='me').find(m=>canAttackViaRoute(m,n));if(alt)h+='<p style="color:#ff7b7b">⚔ 可从「'+alt.name+'」出征进攻此城（先点选该城）</p>';if(f&&f.neutral&&S.realtimePvp)h+=parlayBlock(n,f);}showModal('城池·'+n.name,h);}
+
+// 游说结盟面板（仅双阵营实时国战·仅中立势力）：捐献两 → 概率结盟；捐钱会使对方扩军
+function parlayBlock(n,f){
+ const abs=(S.allied&&S.allied[n.owner])||null;
+ const don=(S.donation&&S.donation[n.owner])||0;
+ const rate=0.30+(don>=100?0.40:0);
+ let h='<hr style="border-color:var(--line);margin:10px 0">';
+ h+='<p><b>🤝 结盟游说</b>　状态：'+(abs?(abs===S.side?'<span style="color:#5fbf7a">已与我方结盟</span>':'<span style="color:#e0604f">已被对手拉拢</span>'):'尚中立')+'</p>';
+ if(abs){h+='<div class="row" style="margin-top:6px"><button class="btn" onclick="closeModal()">关闭</button></div>';return h;}
+ h+='<p class="muted">累计捐献：<b>'+fmt(don)+'</b> 万两　当前游说成功率：<b style="color:'+(rate>=0.6?'var(--good)':'var(--warn)')+'">'+Math.round(rate*100)+'%</b></p>';
+ h+='<p class="muted">基础成功率 30%；累计捐满 <b>100 万两</b> 后额外 +40%（→70%）。捐献会令 '+f.name+' 兵力增长（每 1 万两 +100 兵，上限为基兵的 150%），失败的代价是「资敌」。</p>';
+ h+='<p>本次捐献：<input id="pl_amt" type="number" min="0" step="1" value="'+Math.max(0,Math.min(10,Math.floor(S.gold)))+'" style="width:110px"> 万两　<span class="muted">（国库 '+fmt(S.gold)+' 万两）</span></p>';
+ h+='<div class="row" style="margin-top:6px"><button class="btn gold" onclick="pvpParlay(\''+n.id+'\')">💰 捐献并游说</button><button class="btn" onclick="closeModal()">关闭</button></div>';
+ return h;
+}
+
+// 执行游说：扣国库 → 累计捐献 → 中立扩军 → 掷骰判定 → 成功则结盟并同步
+function pvpParlay(nid){
+ if(!S||!S.realtimePvp){toast('游说结盟仅在联机国战可用');return;}
+ const n=S.nodes.find(x=>x.id===nid);if(!n)return;
+ const f=S.forces.find(x=>x.id===n.owner);
+ if(!f||!f.neutral){toast('只能游说中立势力');return;}
+ if(S.allied&&S.allied[n.owner]){toast('该中立已有归属，无法再游说');return;}
+ const el=document.getElementById('pl_amt');
+ const amt=Math.floor(Number(el&&el.value)||0);
+ if(amt<1){toast('捐献至少 1 万两');return;}
+ if(amt>S.gold){toast('国库不足（当前 '+fmt(S.gold)+' 万两）');return;}
+ S.gold-=amt;
+ S.donation=S.donation||{};S.donation[n.owner]=(S.donation[n.owner]||0)+amt;
+ // 捐钱使其扩军（上限 +50% 基兵）
+ const base=safe(n.baseTroop,n.troop)||n.troop;
+ n.troop=Math.min(Math.round(base*1.5),n.troop+amt*100);
+ const rate=0.30+(S.donation[n.owner]>=100?0.40:0);
+ const ok=Math.random()<rate;
+ if(ok){
+   S.allied=S.allied||{};S.allied[n.owner]=S.side;
+   log('🤝 游说成功：'+f.name+' 与我方结盟！');toast('🤝 游说成功！'+f.name+' 与我方结盟（成功率 '+Math.round(rate*100)+'%）');
+   pushNeutralAlly(n.id,'🤝 对方已与 '+f.name+' 结盟');
+ }else{
+   log('游说 '+f.name+' 失败（成功率 '+Math.round(rate*100)+'%），对方收礼扩军。');
+   toast('💢 游说失败…'+f.name+' 收下厚礼却不领情（成功率 '+Math.round(rate*100)+'%），其兵力 +'+fmt(amt*100));
+   pushNeutralAlly(n.id,'💢 对方游说 '+f.name+' 失败，其收礼扩军');
+ }
+ closeModal();renderSandbox();
+}
+
+// 结盟状态同步：复用 neutral_move 通道（服务器无需改动），携带 ally 映射与中立城最新值
+// 注意：参数是「城池 id」（不是势力 id）；ally 映射的键才是「势力 id = n.owner」
+function pushNeutralAlly(cityId,note){
+ if(!S||!S.realtimePvp)return;
+ const n=S.nodes.find(x=>x.id===cityId);
+ if(!n)return;
+ DE_PVP.send({type:'neutral_move',delta:{nodes:[{id:n.id,owner:localToAbs(n.owner),troop:Math.round(n.troop),def:Math.round(n.def)}],ally:{nid:n.owner,side:S.side},note:note||''}});
+}
 
 // 割地求和：割让城池换取金银（应急对策之一，0 行动点）
 
@@ -2046,7 +2118,7 @@ function renderSandbox(){
 
  }
 
- S.nodes.forEach(n=>{const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const cls=['node'];if(n===fromNode)cls.push('from');if(n===toNode)cls.push('to');if(n.special)cls.push('special');if(n.pass)cls.push('pass');if(fromNode&&n!==fromNode&&(n.owner==='opponent'||n.owner==='neutral')){if(canAttackViaRoute(fromNode,n))cls.push('atk');else cls.push('noatk');}const tc=n.troop<500?'#ff6b5a':(n.troop>20000?'#ffcf6b':'rgba(255,255,255,.75)');const tflag=n.troop>20000?'（雄关）':(n.troop<500?'（危！）':'');const st=starAt(n.id);h+='<div class="'+cls.join(' ')+'" style="left:'+n.x+'%;top:'+n.y+'%;border-color:'+fc+';background:'+hexA(fc,.22)+'" onclick="selNode(\''+n.id+'\')"><div class="nt" style="color:'+fc+';text-shadow:0 1px 2px #000">'+n.name+'</div><div class="nd" style="color:'+tc+'">'+fmt(safe(n.troop,0))+'·防'+safe(n.def,10)+tflag+'</div>'+(st?'<div class="nd" style="color:#ff6b5a" title="守城名将·统率'+st.lead+'">🎖'+st.nm+'</div>':'')+'</div>';});
+ S.nodes.forEach(n=>{const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const cls=['node'];if(n===fromNode)cls.push('from');if(n===toNode)cls.push('to');if(n.special)cls.push('special');if(n.pass)cls.push('pass');if(fromNode&&n!==fromNode&&isEnemyOwner(n.owner)&&!isAlliedToMe(n.owner)){if(canAttackViaRoute(fromNode,n))cls.push('atk');else cls.push('noatk');}const tc=n.troop<500?'#ff6b5a':(n.troop>20000?'#ffcf6b':'rgba(255,255,255,.75)');const tflag=n.troop>20000?'（雄关）':(n.troop<500?'（危！）':'');const st=starAt(n.id);h+='<div class="'+cls.join(' ')+'" style="left:'+n.x+'%;top:'+n.y+'%;border-color:'+fc+';background:'+hexA(fc,.22)+'" onclick="selNode(\''+n.id+'\')"><div class="nt" style="color:'+fc+';text-shadow:0 1px 2px #000">'+n.name+'</div><div class="nd" style="color:'+tc+'">'+fmt(safe(n.troop,0))+'·防'+safe(n.def,10)+tflag+'</div>'+(st?'<div class="nd" style="color:#ff6b5a" title="守城名将·统率'+st.lead+'">🎖'+st.nm+'</div>':'')+'</div>';});
 
  h+='</div><div id="mapctrl"><button class="btn sm" onclick="zoomMap(1.2)">＋</button><button class="btn sm" onclick="zoomMap(0.83)">－</button><button class="btn sm" onclick="resetMap()">⟳</button></div></div>';
 
@@ -2054,7 +2126,7 @@ function renderSandbox(){
 
  h+='<div class="row" style="margin-top:10px">';
 
- S.forces.forEach(f=>{const cnt=S.nodes.filter(n=>n.owner===f.id).length;if(f.id!=='me'&&cnt===0)return;const rel=f.id==='me'?'★ 本朝':(f.relation['me']==='盟'?'🤝 结盟':(f.relation['me']==='藩'?'🏮 藩属':(f.relation['me']==='敌'?'⚔ 敌对':'⚔ 争霸')));const stars=(S.starGens||[]).filter(x=>x.force===f.id);h+='<div class="card3" style="flex:1;min-width:140px;border-color:'+hexA(f.color,.55)+'"><div class="h" style="color:'+f.color+'"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+f.color+';margin-right:4px"></span>'+(f.neutral?'🜂第三方 '+f.name:f.name)+'</div><div class="muted">'+rel+' ｜ 城 '+cnt+' ｜ 兵 '+fmt(S.nodes.filter(n=>n.owner===f.id).reduce((s,n)=>s+safe(n.troop,0),0))+'</div>'+(stars.length?'<div class="muted" style="font-size:11px;color:#ff6b5a">🎖 '+stars.map(x=>x.nm+'（统'+x.lead+'·'+((S.nodes.find(n=>n.id===x.city)||{name:'?'}).name)+'）').join('，')+'</div>':'')+'</div>';});
+ S.forces.forEach(f=>{const cnt=S.nodes.filter(n=>n.owner===f.id).length;if(f.id!=='me'&&cnt===0)return;const rel=f.id==='me'?'★ 本朝':(f.neutral?((S.allied&&S.allied[f.id])?(S.allied[f.id]===S.side?'🤝 盟友':'⚔ 已投敌'):'🜂 观望'):(f.relation['me']==='盟'?'🤝 结盟':(f.relation['me']==='藩'?'🏮 藩属':(f.relation['me']==='敌'?'⚔ 敌对':'⚔ 争霸'))));const stars=(S.starGens||[]).filter(x=>x.force===f.id);h+='<div class="card3" style="flex:1;min-width:140px;border-color:'+hexA(f.color,.55)+'"><div class="h" style="color:'+f.color+'"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+f.color+';margin-right:4px"></span>'+(f.neutral?'🜂第三方 '+f.name:f.name)+'</div><div class="muted">'+rel+' ｜ 城 '+cnt+' ｜ 兵 '+fmt(S.nodes.filter(n=>n.owner===f.id).reduce((s,n)=>s+safe(n.troop,0),0))+'</div>'+(stars.length?'<div class="muted" style="font-size:11px;color:#ff6b5a">🎖 '+stars.map(x=>x.nm+'（统'+x.lead+'·'+((S.nodes.find(n=>n.id===x.city)||{name:'?'}).name)+'）').join('，')+'</div>':'')+'</div>';});
 
  h+='</div>';
 
@@ -4611,6 +4683,8 @@ function migrateS(){if(!S)return;
 
  garrison:{},nirvana:false,deathCause:null,firstDeathShare:false,tutDone:0,
 
+ donation:{},allied:{},
+
  settings:{bgmVol:50,sfxVol:60,gameSpeed:'normal',theme:'minghuang',fontSize:'中',fx:true,autosave:15,guide:true,econDiff:'标准'}};
 
  Object.keys(dft).forEach(k=>{if(S[k]===undefined||S[k]===null)S[k]=dft[k];});
@@ -5128,7 +5202,7 @@ const DE_PVP = {
    '<span class="muted">⏱ <b id="pvp_cltimer" style="color:var(--gold2)">' + Math.ceil(this.clientRemaining / 1000) + '秒</b></span>' +
    '<span class="muted">我方国力 <b style="color:var(--good)">' + myPower + '</b></span>' +
    '<span class="muted">' + oppName + '国力 <b style="color:var(--warn)">' + (oppPower || '--') + '</b></span>' +
-   (S&&S.realtimePvp?'<span class="muted">🏯 我 '+S.nodes.filter(n=>n.owner==='me').length+' ｜ '+oppName+' '+S.nodes.filter(n=>n.owner==='opponent').length+' ｜ 中立 '+S.nodes.filter(n=>n.owner==='neutral').length+'</span>':'') +
+   (S&&S.realtimePvp?'<span class="muted">🏯 我 '+S.nodes.filter(n=>n.owner==='me').length+' ｜ '+oppName+' '+S.nodes.filter(n=>n.owner==='opponent').length+' ｜ 第三方 '+S.nodes.filter(n=>isEnemyOwner(n.owner)&&n.owner!=='opponent').length+'</span>':'') +
    '<button class="btn gold sm" id="pvp_endturn_btn" onclick="DE_PVP.endTurn()">结束回合 ⏭</button>';
  },
  updatePvpTimer() {
