@@ -48,7 +48,7 @@ body{font-size:var(--fs,15px)}
 
 .stat .bad{color:var(--bad)} .stat .good{color:var(--good)}
 
-/* 行动点圆点：上限 15 点，缩小尺寸与间距并允许换行，避免撑破顶栏 */
+/* 行动点圆点：上限 20 点，缩小尺寸与间距并允许换行，避免撑破顶栏 */
 
 #apdot{display:inline-flex;flex-wrap:wrap;gap:2px;row-gap:2px;max-width:132px;vertical-align:middle;justify-content:flex-start}
 
@@ -139,6 +139,9 @@ body{font-size:var(--fs,15px)}
 .node.from{box-shadow:0 0 0 3px var(--good);}
 
 .node.to{box-shadow:0 0 0 3px var(--bad);}
+.node.atk{box-shadow:0 0 0 3px var(--bad);border-color:var(--bad);animation:pulseAtk 1s infinite}
+.node.noatk{opacity:.45;filter:grayscale(.6)}
+@keyframes pulseAtk{0%,100%{box-shadow:0 0 0 2px var(--bad)}50%{box-shadow:0 0 0 5px var(--bad)}}
 
 .node .nt{color:var(--gold2);font-weight:bold}
 
@@ -618,7 +621,7 @@ function newGame(key,diffKey,seedIn,opts){
 
  mods:{income:0,admin:0,build:0,foodG:0,talent:0,diplo:0,armyCap:0,atk:0,def:0,corrupt:0,tech:0,heartCap:0,genLead:0},
 
- apMax:15, ap:15, // 第八轮：行动点上限 15，满足第 8 回合 8 点门槛，每载入重置、不累积
+ apMax:20, ap:20, // 行动点上限 20（与 PvP 帮助文案一致；每载入重置、不累积）
 
  limits:{}, gen:1, bonusDraw:0, rival:null, _collectWon:0,
 
@@ -798,10 +801,9 @@ function sendAnnihilated(winnerAbs){
 
 function attackCity(fromId,toId,troops,mode){
  const fn=S.nodes.find(n=>n.id===fromId),tn=S.nodes.find(n=>n.id===toId);if(!fn||!tn)return;
- // 双保险：出征必须与基地城相邻（有路线相连），否则拒绝（防绕过 UI 的异常调用/失同步）
- const adj=(S.edges||[]).some(e=>(e.a===fromId&&e.b===toId)||(e.b===fromId&&e.a===toId));
- if(!adj){toast('⚠ 只能进攻相邻城池');return;}
- if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.sendAttack(fromId,toId,troops,mode); toast('⚔ 已向好友城池发兵…'); closeModal(); return; }
+ // 双保险：出征必须沿路线进攻相邻城池（方案B），否则拒绝（防绕过 UI 的异常调用/失同步）
+ if(!canAttackViaRoute(fn,tn)){toast('⚠ 目标不可达（与出击城无路线相连）');return;}
+ if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.sendAttack(fromId,toId,troops,mode); toast('⚔ 已向好友城池发兵…'); closeModal(); fromNode=null;toNode=null; return; }
  resolveBattle('me',fromId,toId,mode,troops);
  if(S.realtimePvp) pushBattleResult([fromId,toId]);
 }
@@ -1280,6 +1282,16 @@ function buildEdges(){
 
  S.edges=E;
 
+ // —— 双阵营实时国战：开局强制前线路线，保证每局都有正面战场（修复"点好友城全被拒"回归）——
+ if(S&&S.realtimePvp){
+   const meN=S.nodes.filter(n=>n.owner==='me'),opN=S.nodes.filter(n=>n.owner==='opponent'),neN=S.nodes.filter(n=>n.owner==='N1'||n.owner==='N2'||n.owner==='neutral');
+   const pairs=[];
+   meN.forEach(a=>opN.forEach(b=>pairs.push([a,b,dist(a,b)])));
+   pairs.sort((x,y)=>x[2]-y[2]);
+   for(let i=0;i<Math.min(3,pairs.length);i++){const a=pairs[i][0],b=pairs[i][1];addE(a.id,b.id);}
+   neN.forEach(n=>{const m=meN.slice().sort((a,b)=>dist(n,a)-dist(n,b))[0];const o=opN.slice().sort((a,b)=>dist(n,a)-dist(n,b))[0];if(m)addE(n.id,m.id);if(o)addE(n.id,o.id);});
+ }
+
  // 重要关口：连通度（度数）最高的 6 座城设为雄关，防御与驻军加成
 
  const deg={};E.forEach(e=>{deg[e.a]=(deg[e.a]||0)+1;deg[e.b]=(deg[e.b]||0)+1;});
@@ -1301,6 +1313,12 @@ function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
 // 只沿连线判定邻敌（不再按直线距离，关口价值因此体现）
 
 function enemyNeighbors(fid){const own=S.nodes.filter(n=>n.owner===fid);const out=[];own.forEach(n=>{neighborsOf(n.id).forEach(m=>{if(m&&m.owner!==fid&&m.owner!=='neutral'&&out.indexOf(m)<0)out.push(m);});});return out;}
+// 进攻可达判定（方案B）：仅当目标城与出击城有 S.edges 路线相连、且目标为敌/中立时，才可进攻；禁止隔山打牛
+function canAttackViaRoute(from,to){
+  if(!from||!to)return false;
+  if(to.owner!=='opponent'&&to.owner!=='neutral')return false;
+  return (S.edges||[]).some(e=>(e.a===from.id&&e.b===to.id)||(e.b===from.id&&e.a===to.id));
+}
 
 function counterType(a,b){ // 骑>弓>步>骑
 
@@ -1325,6 +1343,18 @@ function resolveBattle(afid,fromId,toId,mode,troops,genId){
  troops=Math.max(0,safe(troops,0));tn.troop=Math.max(0,safe(tn.troop,0));from.troop=Math.max(0,safe(from.troop,0));tn.def=safe(tn.def,10);
 
  const of=S.forces.find(f=>f.id===afid),df=S.forces.find(f=>f.id===prevOwner);
+
+ // 兵力碾压：出兵≥3倍守军，不战而下（用户规则）
+ if(troops>=3*tn.troop){
+   tn.owner=afid;const remain=Math.round(troops*0.5);tn.troop=remain;from.troop-=troops;
+   if(prevOwner!==afid&&typeof afterCityFall==='function')afterCityFall(tn,false);
+   const isMe=afid==='me';
+   if(isMe){S.armies.me=Math.max(0,safe(S.armies.me,0)-troops);S.rep+=2;log('攻克 '+tn.name+'（兵力碾压）！');toast('⚔ 兵力碾压，不战而下 '+tn.name);if(S.realtimePvp)checkAnnihilation();}
+   else{toast('⚔ '+of.name+' 兵力碾压，攻取 '+tn.name);}
+   if(prevOwner==='me'&&!S.nodes.some(n=>n.owner==='me')){ if(S.realtimePvp){ if(typeof sendAnnihilated==='function')sendAnnihilated(S.side==='A'?'B':'A'); return; } log('疆土尽失，'+S.era+' 王朝落幕。');endGame('战败','城破国灭，山河易主');return; }
+   fromNode=null;toNode=null;renderSandbox();
+   return;
+ }
 
  const gId=genId||(of.generals&&of.generals[0]);
 
@@ -1465,13 +1495,15 @@ function dominateSurrender(relaxed){
 
 function selNode(id){const n=S.nodes.find(x=>x.id===id);if(!n)return;
 
- if(n.owner==='me'){fromNode=n;toNode=null;}
+ if(n.owner==='me'){fromNode=n;toNode=null;renderSandbox();return;}
 
- else if(fromNode){
-   // 只能沿路线进攻与出击基地相邻（有连线）的城池；跨城（不相邻）一律拒绝
-   const adj=(S.edges||[]).some(e=>(e.a===fromNode.id&&e.b===n.id)||(e.b===fromNode.id&&e.a===n.id));
-   if(!adj){toast('⚠ 只能进攻与「'+fromNode.name+'」相邻（有路线相连）的城池');renderSandbox();return;}
-   toNode=n;showBattlePanel(fromNode,toNode);return;
+ if(fromNode){
+   if(canAttackViaRoute(fromNode,n)){toNode=n;showBattlePanel(fromNode,toNode);return;}
+   const d=Math.round(dist(fromNode,n));
+   toast((n.owner==='opponent'||n.owner==='neutral')
+     ? '⚠ '+n.name+' 与「'+fromNode.name+'」不相邻（无路线相连，相距'+d+'），需先夺取前线据点再来攻。'
+     : '⚠ 不能进攻己方城池。');
+   renderSandbox();return;
  }
 
  showNodePanel(n);renderSandbox();
@@ -1988,7 +2020,7 @@ function renderSandbox(){
 
  }
 
- S.nodes.forEach(n=>{const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const cls=['node'];if(n===fromNode)cls.push('from');if(n===toNode)cls.push('to');if(n.special)cls.push('special');if(n.pass)cls.push('pass');const tc=n.troop<500?'#ff6b5a':(n.troop>20000?'#ffcf6b':'rgba(255,255,255,.75)');const tflag=n.troop>20000?'（雄关）':(n.troop<500?'（危！）':'');const st=starAt(n.id);h+='<div class="'+cls.join(' ')+'" style="left:'+n.x+'%;top:'+n.y+'%;border-color:'+fc+';background:'+hexA(fc,.22)+'" onclick="selNode(\''+n.id+'\')"><div class="nt" style="color:'+fc+';text-shadow:0 1px 2px #000">'+n.name+'</div><div class="nd" style="color:'+tc+'">'+fmt(safe(n.troop,0))+'·防'+safe(n.def,10)+tflag+'</div>'+(st?'<div class="nd" style="color:#ff6b5a" title="守城名将·统率'+st.lead+'">🎖'+st.nm+'</div>':'')+'</div>';});
+ S.nodes.forEach(n=>{const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const cls=['node'];if(n===fromNode)cls.push('from');if(n===toNode)cls.push('to');if(n.special)cls.push('special');if(n.pass)cls.push('pass');if(fromNode&&n!==fromNode&&(n.owner==='opponent'||n.owner==='neutral')){if(canAttackViaRoute(fromNode,n))cls.push('atk');else cls.push('noatk');}const tc=n.troop<500?'#ff6b5a':(n.troop>20000?'#ffcf6b':'rgba(255,255,255,.75)');const tflag=n.troop>20000?'（雄关）':(n.troop<500?'（危！）':'');const st=starAt(n.id);h+='<div class="'+cls.join(' ')+'" style="left:'+n.x+'%;top:'+n.y+'%;border-color:'+fc+';background:'+hexA(fc,.22)+'" onclick="selNode(\''+n.id+'\')"><div class="nt" style="color:'+fc+';text-shadow:0 1px 2px #000">'+n.name+'</div><div class="nd" style="color:'+tc+'">'+fmt(safe(n.troop,0))+'·防'+safe(n.def,10)+tflag+'</div>'+(st?'<div class="nd" style="color:#ff6b5a" title="守城名将·统率'+st.lead+'">🎖'+st.nm+'</div>':'')+'</div>';});
 
  h+='</div><div id="mapctrl"><button class="btn sm" onclick="zoomMap(1.2)">＋</button><button class="btn sm" onclick="zoomMap(0.83)">－</button><button class="btn sm" onclick="resetMap()">⟳</button></div></div>';
 
@@ -3183,7 +3215,7 @@ function dismissOfficial(id){const o=S.officials.find(x=>x.id===id);if(!o)return
 
 const TUT_STEPS=[
 
- {tab:'court',t:'👑 开国前三载，朕为你引路',b:'点右下「下一载入 ▶」推进时间；每载入 15 行动点，可治理六部、抽策、征税。多数行动<b>每载入限 1 次</b>，点数主要花在攻城推进、后宫、培养子嗣等可重复行动上；行动失败（如国库不足）不扣行动点，放心尝试。'},
+ {tab:'court',t:'👑 开国前三载，朕为你引路',b:'点右下「下一载入 ▶」推进时间；每载入 20 行动点，可治理六部、抽策、征税。多数行动<b>每载入限 1 次</b>，点数主要花在攻城推进、后宫、培养子嗣等可重复行动上；行动失败（如国库不足）不扣行动点，放心尝试。'},
 
  {tab:'sandbox',t:'⚔ 沙盘征战',b:'点己方城选出击基地，再点相邻敌城「出征」。攻城有进度条与随机事件：强攻快损兵多、围城省兵可粮尽、离间可劝降。名城有 🎖名将 坐镇，留意单挑与突围事件。'},
 
@@ -4535,7 +4567,7 @@ function migrateS(){if(!S)return;
 
  armies:{me:0},mods:{income:0,admin:0,build:0,foodG:0,talent:0,diplo:0,armyCap:0,atk:0,def:0,corrupt:0,tech:0,heartCap:0,genLead:0},
 
- apMax:15,ap:15,limits:{},gen:1,bonusDraw:0,rival:null,_collectWon:0,
+ apMax:20,ap:20,limits:{},gen:1,bonusDraw:0,rival:null,_collectWon:0,
 
  officials:[],concubines:[],princes:[],heir:null,queen:null,
 
@@ -4627,7 +4659,7 @@ function migrateS(){if(!S)return;
 
  // 行动点上限统一为 15（第八轮需求），并把异常/溢出的行动点复位
 
- S.apMax=15; if(S.ap==null||S.ap>S.apMax)S.ap=15; S.ap=Math.max(0,safe(S.ap,15));
+ S.apMax=20; if(S.ap==null||S.ap>S.apMax)S.ap=20; S.ap=Math.max(0,safe(S.ap,20));
 
  S.princes=(S.princes||[]).map(p=>{if(!p.six)p.six={统率:40,武力:40,智力:40,政治:40,魅力:40};if(p.cultCount==null)p.cultCount=0;if(!p.talent)p.talent=pick(['文','武','政','商','艺']);if(!p.status)p.status=p.age>=(p.son?16:14)?'成年':'幼年';return p;});
 
@@ -4673,7 +4705,7 @@ function startDyn(key,diff){const sd=(document.getElementById('st_seed')||{}).va
 
  if(S.diff==='normal'){showModal('📌 普通模式 · 经济趋紧', '<p>普通模式下国库<b>更紧张</b>：税收 −20%、商路收益 −25%、战后掠夺 −30%、兴修 / 火器 / 宫室开销上升、官员俸禄更贵。</p><p>建议：优先发展<b>户部（征税 / 商路）</b>，控制官员编制（<b>裁撤冗余</b>可省四成俸禄），精打细算每一载入的开支。</p><div class="row"><button class="btn gold" onclick="closeModal()">朕知道了</button></div>');} // 平衡性优化：普通首局强制提示经济趋紧
 
- if(S.settings.guide){toast('👑 开国！每载入15行动点（多数行动每载入限1次），治理六部、征战沙盘、经营后宫，达成一统天下等胜利。');maybeTutorial();}}
+ if(S.settings.guide){toast('👑 开国！每载入20行动点（多数行动每载入限1次），治理六部、征战沙盘、经营后宫，达成一统天下等胜利。');maybeTutorial();}}
 
 function showStart(pvpMode=false){
 
