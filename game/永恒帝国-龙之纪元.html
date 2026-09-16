@@ -797,7 +797,10 @@ function sendAnnihilated(winnerAbs){
 }
 
 function attackCity(fromId,toId,troops,mode){
- const tn=S.nodes.find(n=>n.id===toId);if(!tn)return;
+ const fn=S.nodes.find(n=>n.id===fromId),tn=S.nodes.find(n=>n.id===toId);if(!fn||!tn)return;
+ // 双保险：出征必须与基地城相邻（有路线相连），否则拒绝（防绕过 UI 的异常调用/失同步）
+ const adj=(S.edges||[]).some(e=>(e.a===fromId&&e.b===toId)||(e.b===fromId&&e.a===toId));
+ if(!adj){toast('⚠ 只能进攻相邻城池');return;}
  if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.sendAttack(fromId,toId,troops,mode); toast('⚔ 已向好友城池发兵…'); closeModal(); return; }
  resolveBattle('me',fromId,toId,mode,troops);
  if(S.realtimePvp) pushBattleResult([fromId,toId]);
@@ -1464,7 +1467,12 @@ function selNode(id){const n=S.nodes.find(x=>x.id===id);if(!n)return;
 
  if(n.owner==='me'){fromNode=n;toNode=null;}
 
- else if(fromNode){toNode=n;showBattlePanel(fromNode,toNode);return;}
+ else if(fromNode){
+   // 只能沿路线进攻与出击基地相邻（有连线）的城池；跨城（不相邻）一律拒绝
+   const adj=(S.edges||[]).some(e=>(e.a===fromNode.id&&e.b===n.id)||(e.b===fromNode.id&&e.a===n.id));
+   if(!adj){toast('⚠ 只能进攻与「'+fromNode.name+'」相邻（有路线相连）的城池');renderSandbox();return;}
+   toNode=n;showBattlePanel(fromNode,toNode);return;
+ }
 
  showNodePanel(n);renderSandbox();
 
