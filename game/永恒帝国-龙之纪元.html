@@ -1282,14 +1282,37 @@ function buildEdges(){
 
  S.edges=E;
 
- // —— 双阵营实时国战：开局强制前线路线，保证每局都有正面战场（修复"点好友城全被拒"回归）——
+ // —— 双阵营实时国战：开局强制前线路线，保证每座好友城都能被进攻（修复"点好友城全被拒"回归）——
  if(S&&S.realtimePvp){
    const meN=S.nodes.filter(n=>n.owner==='me'),opN=S.nodes.filter(n=>n.owner==='opponent'),neN=S.nodes.filter(n=>n.owner==='N1'||n.owner==='N2'||n.owner==='neutral');
-   const pairs=[];
-   meN.forEach(a=>opN.forEach(b=>pairs.push([a,b,dist(a,b)])));
-   pairs.sort((x,y)=>x[2]-y[2]);
-   for(let i=0;i<Math.min(3,pairs.length);i++){const a=pairs[i][0],b=pairs[i][1];addE(a.id,b.id);}
-   neN.forEach(n=>{const m=meN.slice().sort((a,b)=>dist(n,a)-dist(n,b))[0];const o=opN.slice().sort((a,b)=>dist(n,a)-dist(n,b))[0];if(m)addE(n.id,m.id);if(o)addE(n.id,o.id);});
+   const hasNeighborOf=(n,...owners)=>{
+     return (S.edges||[]).some(e=>{
+       const o=e.a===n.id?e.b:(e.b===n.id?e.a:null);
+       const on=o?S.nodes.find(x=>x.id===o):null;
+       return on&&owners.includes(on.owner);
+     });
+   };
+   // 1) 每座好友城必须至少直连一座我方城：确保任意好友据点都能被进攻，不会再出现"陈留点不动"
+   opN.forEach(b=>{
+     if(!hasNeighborOf(b,'me')){
+       const m=meN.slice().sort((a,c)=>dist(b,a)-dist(b,c))[0];
+       if(m) addE(b.id,m.id);
+     }
+   });
+   // 2) 我方每座城也必须至少邻接一座好友城或中立城：避免大后方完全安全，保证双方都有战场
+   meN.forEach(a=>{
+     if(!hasNeighborOf(a,'opponent','neutral')){
+       const b=opN.slice().sort((c,d)=>dist(a,c)-dist(a,d))[0];
+       if(b) addE(a.id,b.id);
+     }
+   });
+   // 3) 中立城连最近的我方和好友城，作为双方可争夺的缓冲带
+   neN.forEach(n=>{
+     const m=meN.slice().sort((a,b)=>dist(n,a)-dist(n,b))[0];
+     const o=opN.slice().sort((a,b)=>dist(n,a)-dist(n,b))[0];
+     if(m) addE(n.id,m.id);
+     if(o) addE(n.id,o.id);
+   });
  }
 
  // 重要关口：连通度（度数）最高的 6 座城设为雄关，防御与驻军加成
@@ -1500,9 +1523,12 @@ function selNode(id){const n=S.nodes.find(x=>x.id===id);if(!n)return;
  if(fromNode){
    if(canAttackViaRoute(fromNode,n)){toNode=n;showBattlePanel(fromNode,toNode);return;}
    const d=Math.round(dist(fromNode,n));
-   toast((n.owner==='opponent'||n.owner==='neutral')
-     ? '⚠ '+n.name+' 与「'+fromNode.name+'」不相邻（无路线相连，相距'+d+'），需先夺取前线据点再来攻。'
-     : '⚠ 不能进攻己方城池。');
+   if(n.owner==='opponent'||n.owner==='neutral'){
+     // 若当前基地打不到，但另有我方城可打到，给出明确引导（避免玩家懵逼）
+     const alt=S.nodes.filter(m=>m.owner==='me').find(m=>canAttackViaRoute(m,n));
+     if(alt){toast('⚠ '+n.name+' 与「'+fromNode.name+'」不相邻，可从「'+alt.name+'」出征（点击该城再点这里）');}
+     else{toast('⚠ '+n.name+' 与「'+fromNode.name+'」不相邻（无路线相连，相距'+d+'），需先夺取前线据点再来攻。');}
+   }else{toast('⚠ 不能进攻己方城池。');}
    renderSandbox();return;
  }
 
@@ -1510,7 +1536,7 @@ function selNode(id){const n=S.nodes.find(x=>x.id===id);if(!n)return;
 
 }
 
-function showNodePanel(n){const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const fn=f?f.name:'中立';const gid=S.garrison?S.garrison[n.id]:null;const gname=gid?((S.officials.find(o=>o.id===gid)||{}).nm):null;let h='<p><b class="gold2">'+n.name+'</b>（'+n.zhou+'）　归属：<b style="color:'+fc+'">'+fn+'</b></p>';h+='<p class="muted">驻军 '+fmt(safe(n.troop,0))+'　防御 '+safe(n.def,10)+(n.special?'　⚑特殊区域':'')+(gname?'　<b style="color:#ffcf6b">守将：'+gname+'（防+30%）</b>':'');h+='</p>';if(n.pass)h+='<p style="color:#ffcf6b">⚷ <b>重要关口</b>：守住则扼敌咽喉，失守则门户洞开</p>';if(n.owner==='me'){h+='<div class="row"><button class="btn gold" onclick="selEnemyFrom(\''+n.id+'\')">选择此城出征</button><button class="btn" onclick="openCityManage()">兵力管理(加兵/转移/守将)</button><button class="btn" onclick="cedeCity(\''+n.id+'\')">割地求和</button></div>';}showModal('城池·'+n.name,h);}
+function showNodePanel(n){const f=S.forces.find(x=>x.id===n.owner);const fc=f?f.color:'#8a8f98';const fn=f?f.name:'中立';const gid=S.garrison?S.garrison[n.id]:null;const gname=gid?((S.officials.find(o=>o.id===gid)||{}).nm):null;let h='<p><b class="gold2">'+n.name+'</b>（'+n.zhou+'）　归属：<b style="color:'+fc+'">'+fn+'</b></p>';h+='<p class="muted">驻军 '+fmt(safe(n.troop,0))+'　防御 '+safe(n.def,10)+(n.special?'　⚑特殊区域':'')+(gname?'　<b style="color:#ffcf6b">守将：'+gname+'（防+30%）</b>':'');h+='</p>';if(n.pass)h+='<p style="color:#ffcf6b">⚷ <b>重要关口</b>：守住则扼敌咽喉，失守则门户洞开</p>';if(n.owner==='me'){h+='<div class="row"><button class="btn gold" onclick="selEnemyFrom(\''+n.id+'\')">选择此城出征</button><button class="btn" onclick="openCityManage()">兵力管理(加兵/转移/守将)</button><button class="btn" onclick="cedeCity(\''+n.id+'\')">割地求和</button></div>';}else if((n.owner==='opponent'||n.owner==='neutral')){const alt=S.nodes.filter(m=>m.owner==='me').find(m=>canAttackViaRoute(m,n));if(alt)h+='<p style="color:#ff7b7b">⚔ 可从「'+alt.name+'」出征进攻此城（先点选该城）</p>';}showModal('城池·'+n.name,h);}
 
 // 割地求和：割让城池换取金银（应急对策之一，0 行动点）
 
