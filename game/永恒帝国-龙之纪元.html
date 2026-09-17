@@ -639,7 +639,7 @@ function newGame(key,diffKey,seedIn,opts){
 
  trades:[], vassals:[], haremPeace:100, siege:null, cashIssueTurns:0, lastIssue:-99,
 
- engines:{}, engRes:null, starGens:[], defend:null, season:null,
+ engines:{}, engRes:null, starGens:[], defend:null, season:null, selUnit:'longxiang', _tradeFailStreak:0, _turnEarn:0,
 
  garrison:{}, nirvana:false, deathCause:null, firstDeathShare:false, tutDone:0,
 
@@ -802,12 +802,12 @@ function sendAnnihilated(winnerAbs){
  DE_PVP.send({type:'annihilated',winner:winnerAbs});
 }
 
-function attackCity(fromId,toId,troops,mode){
+function attackCity(fromId,toId,troops,mode,unit){
  const fn=S.nodes.find(n=>n.id===fromId),tn=S.nodes.find(n=>n.id===toId);if(!fn||!tn)return;
  // 双保险：出征必须沿路线进攻相邻城池（方案B），否则拒绝（防绕过 UI 的异常调用/失同步）
  if(!canAttackViaRoute(fn,tn)){toast('⚠ 目标不可达（与出击城无路线相连）');return;}
- if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.sendAttack(fromId,toId,troops,mode); toast('⚔ 已向好友城池发兵…'); closeModal(); fromNode=null;toNode=null; return; }
- resolveBattle('me',fromId,toId,mode,troops);
+ if(S.realtimePvp&&tn.owner==='opponent'){ DE_PVP.sendAttack(fromId,toId,troops,mode,unit); toast('⚔ 已向好友城池发兵…'); closeModal(); fromNode=null;toNode=null; return; }
+ resolveBattle('me',fromId,toId,mode,troops,null,{unit:unit||S.selUnit});
  if(S.realtimePvp) pushBattleResult([fromId,toId]);
 }
 function pushBattleResult(ids){
@@ -1215,10 +1215,13 @@ function buildMap(){
   S.forces.forEach(f=>{if(f.id==='me')return;const own=S.nodes.filter(n=>n.owner===f.id);if(!own.length)return;const cnt=own.length>=4?2:1;const sortedOwn=own.slice().sort((a,b)=>((b.pass?1:0)-(a.pass?1:0))||(b.def-a.def));for(let i=0;i<cnt&&i<sortedOwn.length;i++){const c=sortedOwn[i];const star={id:'sg_'+f.id+'_'+i,nm:genName(),lead:75+Math.floor(RNG()*21),might:ri(70,95),wit:ri(60,90),force:f.id,city:c.id,loyal:ri(70,95),trs:[pick(OFF_TRAITS).nm,pick(OFF_TRAITS).nm]};S.starGens.push(star);c.def+=Math.floor(star.lead/4);c.troop+=2000+Math.floor(RNG()*3001);}});
   // 记录中立城「基兵」，用于游说捐献扩军的上限（+50% 基兵）
   S.nodes.forEach(n=>{if(n.owner==='N1'||n.owner==='N2'||n.owner==='neutral')n.baseTroop=n.troop;});
+  // 守城兵种：每城随机一种（种子化，PvP 双端一致），用于兵种克制结算
+  S.nodes.forEach(n=>{ if(!n.defUnit) n.defUnit=UNIT_TYPES[Math.floor(RNG()*UNIT_TYPES.length)].id; });
   buildEdges();return;
  }
 
  S.nodes=NODE_DEFS.map(n=>({id:n.id,name:n.name,zhou:n.zhou,x:n.x,y:n.y,owner:n.owner,special:!!n.special,pass:false,def:Math.floor(RNG()*31)+10,troop:Math.floor(RNG()*49001)+1000}));
+ S.nodes.forEach(n=>{ if(!n.defUnit) n.defUnit=UNIT_TYPES[Math.floor(RNG()*UNIT_TYPES.length)].id; });
 
  S.forces=FORCE_DEFS.map(f=>({id:f.id,name:f.name,color:f.color,ai:f.ai,gold:ri(5000,30000),relation:{},peace:0,generals:[]}));
 
@@ -1360,17 +1363,50 @@ function canAttackViaRoute(from,to){
   return (S.edges||[]).some(e=>(e.a===from.id&&e.b===to.id)||(e.b===from.id&&e.a===to.id));
 }
 
-function counterType(a,b){ // 骑>弓>步>骑
+/* ===== 兵种克制系统（7 兵种循环；3 基础常驻 + 4 器械解锁特种）=====
+   龙骧铁骑 克 神臂弩手、影杀卫
+   玄甲步营 克 龙骧铁骑、破城铁卫
+   神臂弩手 克 玄甲步营、霹雳车营
+   霹雳车营 克 玄甲步营、破城铁卫
+   破城铁卫 克 影杀卫、神机营
+   神机营  克 龙骧铁骑、霹雳车营
+   影杀卫  克 神臂弩手、神机营
+*/
+const UNIT_TYPES=[
+ {id:'longxiang',nm:'龙骧铁骑',kind:'base'},
+ {id:'xuanjia',nm:'玄甲步营',kind:'base'},
+ {id:'shenbi',nm:'神臂弩手',kind:'base'},
+ {id:'pili',nm:'霹雳车营',kind:'siege',eng:'treb',bonus:0.5},
+ {id:'pocheng',nm:'破城铁卫',kind:'siege',eng:'ram',bonus:0.45},
+ {id:'shenji',nm:'神机营',kind:'siege',eng:'tower',bonus:0.5},
+ {id:'yingjia',nm:'影杀卫',kind:'siege',eng:'well',bonus:0.45}
+];
+const UNIT_COUNTER={
+ longxiang:['shenbi','yingjia'], xuanjia:['longxiang','pocheng'], shenbi:['xuanjia','pili'],
+ pili:['xuanjia','pocheng'], pocheng:['yingjia','shenji'], shenji:['longxiang','pili'], yingjia:['shenbi','shenji']
+};
+function unitName(uid){const u=UNIT_TYPES.find(x=>x.id===uid);return u?u.nm:uid;}
+function unitById(uid){return UNIT_TYPES.find(x=>x.id===uid)||null;}
+function unitCounters(uid){return UNIT_COUNTER[uid]||[];}
+// 攻方兵种对守方兵种的克制系数：克制×1.2~1.5，被克×0.5~0.75，否则 1
+function counterUnit(atkUid,defUid){
+ if(!atkUid||!defUid)return 1;
+ if(UNIT_COUNTER[atkUid]&&UNIT_COUNTER[atkUid].includes(defUid))return rf(1.2,1.5); // 我方克制对方
+ if(UNIT_COUNTER[defUid]&&UNIT_COUNTER[defUid].includes(atkUid))return rf(0.5,0.75); // 我方被克
+ return 1;
+}
+// 可选兵种：3 基础常驻 + 已落成器械解锁的特种
+function availableUnits(){return UNIT_TYPES.filter(u=>u.kind==='base'||(S.engines&&S.engines[u.eng]));}
+// 选择已解锁特种兵种时，装备对应器械的实力加成（极大提升）
+function unitWeaponBonus(uid){const u=unitById(uid);if(u&&u.kind==='siege'&&S.engines&&S.engines[u.eng])return u.bonus;return 0;}
 
+function counterType(a,b){ // 旧接口保留（兼容 AI 默认兵种为「步」的调用）
  if(a===b)return 1;
-
  const m={骑:['弓'],弓:['步'],步:['骑']};
-
  return m[a]&&m[a].includes(b)?1.3:0.8;
-
 }
 
-function resolveBattle(afid,fromId,toId,mode,troops,genId){
+function resolveBattle(afid,fromId,toId,mode,troops,genId,atkInfo){
 
  const from=S.nodes.find(n=>n.id===fromId),tn=S.nodes.find(n=>n.id===toId);
 
@@ -1402,9 +1438,12 @@ function resolveBattle(afid,fromId,toId,mode,troops,genId){
 
  const genB=(gen?gen.six.统率:40)+(S.mods.genLead||0)+(S.posts['g'+frontZone(from)]?15:0);
 
- const myType=pick(['骑','弓','步']),enType=pick(['骑','弓','步']);
+ // —— 兵种克制（7 兵种循环）：攻方兵种取自出征面板所选/实时同步传入，守方兵种取自城池 defUnit ——
+ const atkUnit=(atkInfo&&atkInfo.unit)||S.selUnit||pick(['longxiang','xuanjia','shenbi']);
+ const defUnit=tn.defUnit||pick(['longxiang','xuanjia','shenbi']);
+ const atkBonus=(atkInfo&&typeof atkInfo.bonus==='number')?atkInfo.bonus:unitWeaponBonus(atkUnit);
 
- let atk=troops*(1+genB/120)*(1+S.mods.atk)*counterType(myType,enType);
+ let atk=troops*(1+genB/120)*(1+S.mods.atk)*counterUnit(atkUnit,defUnit)*(1+atkBonus);
 
  if(mode==='siege')atk*=(1+(S.weapons?S.weapons.bonus/100:0));
 
@@ -1868,15 +1907,15 @@ let BASE_CARDS=[{"id":"pol_rest","nm":"休养生息","cat":"policy","r":2,"desc"
 
 {"id":"des_longqi2","nm":"龙气护体","cat":"destiny","r":1,"desc":"国运+10，民忠上限+10","mods":{"fate":10,"heartCap":10}},
 
-{"id":"evt_shangren","nm":"商人献宝","cat":"event","r":1,"desc":"得金银800万两","gain":{"gold":800}},
+{"id":"evt_shangren","nm":"商人献宝","cat":"event","r":1,"desc":"得金银约50万两（献宝封顶）","gain":{"gold":50}},
 
-{"id":"evt_chaogong","nm":"异族朝贡","cat":"event","r":1,"desc":"声望+10，金银+400","gain":{"rep":10,"gold":400}},
+{"id":"evt_chaogong","nm":"异族朝贡","cat":"event","r":1,"desc":"声望+10，金银+50","gain":{"rep":10,"gold":50}},
 
 {"id":"evt_omen","nm":"天降祥瑞","cat":"event","r":1,"desc":"民忠+8","gain":{"heart":8}},
 
 {"id":"evt_mingshi","nm":"名士来访","cat":"event","r":2,"desc":"得一文臣武将","grant":"文"},
 
-{"id":"evt_qiyu","nm":"奇遇","cat":"event","r":1,"desc":"得金银600万两","gain":{"gold":600}},
+{"id":"evt_qiyu","nm":"奇遇","cat":"event","r":1,"desc":"得金银约120万两","gain":{"gold":120}},
 
 {"id":"evt_xiandan","nm":"仙丹","cat":"event","r":1,"desc":"民忠+5，文化+5","gain":{"heart":5,"culture":5}},
 
@@ -1886,11 +1925,11 @@ let BASE_CARDS=[{"id":"pol_rest","nm":"休养生息","cat":"policy","r":2,"desc"
 
 {"id":"evt_xiangyun","nm":"祥云","cat":"event","r":2,"desc":"国运+10","gain":{"fate":10}},
 
-{"id":"evt_fanbang","nm":"番邦进献","cat":"event","r":1,"desc":"金银+500，声望+5","gain":{"gold":500,"rep":5}},
+{"id":"evt_fanbang","nm":"番邦进献","cat":"event","r":1,"desc":"金银+50，声望+5","gain":{"gold":50,"rep":5}},
 
 {"id":"evt_yinshi","nm":"隐士出山","cat":"event","r":2,"desc":"得一武将","grant":"武"},
 
-{"id":"evt_hengcai","nm":"天降横财","cat":"event","r":2,"desc":"得金银1000万两","gain":{"gold":1000}}];
+{"id":"evt_hengcai","nm":"天降横财","cat":"event","r":2,"desc":"得金银约200万两","gain":{"gold":200}}];
 
 const CARD_DEFS=BASE_CARDS.concat(EXTRA_CARDS);
 
@@ -1950,7 +1989,7 @@ function upgradeCard(id){const inst=S.deck.concat(S.warehouse).find(c=>c.uid===i
 
 function synthesize(id){const inst=S.deck.concat(S.warehouse).find(c=>c.uid===id);if(!inst)return;const same=S.deck.concat(S.warehouse).filter(c=>c.id===inst.id);if(same.length<3){toast('需3张同卡合成');return;}const k=cost(200);if(S.gold<k){toast('国库不足');return;}for(let i=0;i<3;i++){const idx=S.warehouse.findIndex(c=>c.id===inst.id);if(idx>=0)S.warehouse.splice(idx,1);else{S.deck.splice(S.deck.findIndex(c=>c.id===inst.id),1);}}S.gold-=k;const up=mkCardInst(inst.id);up.lv=Math.min(3,inst.lv+1);if(S.deck.length<10)S.deck.push(up);else S.warehouse.push(up);report('合成成功',[['新卡','Lv'+up.lv],['国库',-k]]);applyDeck();renderAll();}
 
-function playCard(id){const inst=S.deck.find(c=>c.uid===id);if(!inst)return;const c=findCard(id);if(c.cat!=='event'){toast('仅事件卡可即时打出');return;}if(!spendAP())return;toast('打出《'+c.nm+'》：'+c.desc);if(c.gain){if(c.gain.gold)S.gold+=c.gain.gold;if(c.gain.heart)S.heart=clamp(S.heart+c.gain.heart,0,S.heartCap);if(c.gain.rep)S.rep+=c.gain.rep;if(c.gain.culture)S.culture+=c.gain.culture;if(c.gain.food)S.food+=c.gain.food;if(c.gain.fate)S.fate=clamp(S.fate+c.gain.fate,0,100);}if(c.grant)S.officials.push(genOfficial(c.grant));if(c.sp==='ap1')S.ap+=1;log('打出事件卡《'+c.nm+'》。');applyDeck();renderAll();}
+function playCard(id){const inst=S.deck.find(c=>c.uid===id);if(!inst)return;const c=findCard(id);if(c.cat!=='event'){toast('仅事件卡可即时打出');return;}if(!spendAP())return;toast('打出《'+c.nm+'》：'+c.desc);if(c.gain){if(c.gain.gold){const wt=(c.id==='evt_shangren'||c.id==='evt_chaogong'||c.id==='evt_fanbang')?'tribute':'other';grantWindfall(c.gain.gold,wt,{reason:c.nm});}if(c.gain.heart)S.heart=clamp(S.heart+c.gain.heart,0,S.heartCap);if(c.gain.rep)S.rep+=c.gain.rep;if(c.gain.culture)S.culture+=c.gain.culture;if(c.gain.food)S.food+=c.gain.food;if(c.gain.fate)S.fate=clamp(S.fate+c.gain.fate,0,100);}if(c.grant)S.officials.push(genOfficial(c.grant));if(c.sp==='ap1')S.ap+=1;log('打出事件卡《'+c.nm+'》。');applyDeck();renderAll();}
 
 function catName(c){return {policy:'政策',military:'军事',talent:'人才',destiny:'天命',event:'事件'}[c]||c;}
 
@@ -2074,7 +2113,7 @@ function renderCourt(){
 
  h+=ministryCard('刑','刑部·肃政',[['肃清贪腐','actAntiCorrupt','antic'],['宽刑恤民','actLenient','lenient'],['立法改革','actLegislate','legis']]);
 
- h+=ministryCard('工','工部·营造',[['营建宫室','actPalace','palace'],['研制火器 (限1)','actTech','tech'],['督造攻城器械 (限1)','actEngine','engine'],['兴修水利 (限1)','actBuild','build'],['发行货币(20载1次)','actIssueMoney','issue']]);
+ h+=ministryCard('工','工部·营造',[['营建宫室','actPalace','palace'],['研制火器 (限1)','actTech','tech'],['督造攻城器械（自动推进）','actEngine','engine'],['兴修水利 (限1)','actBuild','build'],['发行货币(20载1次)','actIssueMoney','issue']]);
 
  h+='</div>';
 
@@ -2344,11 +2383,24 @@ function nextYear(){
 
  if(Math.random()<0.3)if(siegeEvent())return; // 决策事件仍挂起
 
- if(S.siege.progress>=100){toast('⚔ '+S.nodes.find(n=>n.id===S.siege.to).name+' 城防将破，下一载入点击总攻！');S.siege.progress=100;}
+   if(S.siege.progress>=100){toast('⚔ '+S.nodes.find(n=>n.id===S.siege.to).name+' 城防将破，下一载入点击总攻！');S.siege.progress=100;}
 
- }
+  }
 
- // —— NaN 全量兜底（数值边界保护：任何异常值回到默认值） ——
+  // —— 攻城器械：开工后每回合自动推进 20%~40% 直至落成（解锁对应特种兵种）——
+  if(S.engRes&&S.engRes.prog<100){
+    const _es=ri(20,40);S.engRes.prog=clamp(S.engRes.prog+_es,0,100);
+    const _e=ENGINES.find(x=>x.id===S.engRes.id);
+    if(_e){
+      if(S.engRes.prog>=100){S.engines[_e.id]=1;S.engRes=null;const _u=UNIT_TYPES.find(u=>u.eng===_e.id);
+        log('🛠 '+_e.nm+' 督造完成！解锁特种兵种「'+(_u?_u.nm:'')+'」');
+        eventBroadcast('工造',_e.nm+'落成',_e.icon+' 攻城器械「'+_e.nm+'」督造完成，解锁兵种「'+(_u?_u.nm:'')+'」');
+        toast('🛠 '+_e.nm+' 落成！解锁 '+(_u?_u.nm:''));
+      }else{log('🛠 '+_e.nm+' 督造推进 '+_es+'%（'+Math.round(S.engRes.prog)+'%）');}
+    }
+  }
+
+  // —— NaN 全量兜底（数值边界保护：任何异常值回到默认值） ——
 
  S.gold=safe(S.gold,0);S.food=Math.max(0,safe(S.food,0));S.pop=Math.max(1,safe(S.pop,100));S.heart=safe(S.heart,50);
 
@@ -2358,7 +2410,7 @@ function nextYear(){
 
  S.year++;S.age++;
 
- S.limits={};S.ap=S.apMax;S.princes.forEach(p=>{p.cultCount=0;});
+ S.limits={};S.ap=S.apMax;S._turnEarn=0;S.princes.forEach(p=>{p.cultCount=0;});
 
  // 官员俸禄（文0.8/武1.2万两·人，腐败推高，裁撤冗余后省四成）
 
@@ -2567,6 +2619,52 @@ function rotateHarem(){
 function gameOver(){endGame('驾崩无嗣','先帝崩而储位空悬，朝野分崩，'+S.era+' 王朝就此落幕');}
 
 // 随机事件频率：用户要求「每回合都出现」（2026-09-16 由 25%/回合 调整为必现；事件本身仍随机抽取种类）
+// ===== 财富获取统一管控（献宝 / 外贸 / 奇遇等，防经济崩溃）=====
+// type: 'tribute'(献宝, 单次≤50万) | 'trade'(外贸, 有赚有赔) | 'other'(其他横财)
+// opts: {reason, guaranteed(连败保底绕过5%大失败)}
+function grantWindfall(amount,type,opts){
+ opts=opts||{};
+ // —— 经济风控（献宝/外贸限额·连败保底·每回合上限·5%大失败）仅在「双阵营实时国战」生效 ——
+ // —— 单机 10 势力模式保持原样（全额入库，无风控），以遵循"单机零影响"约束 ——
+ const pvp=!!(S&&S.realtimePvp);
+ let gain=Math.max(0,Math.round(amount));
+ if(pvp){
+   // —— 5% 大失败（连续失败后的保底除外）——
+   if(!opts.guaranteed && Math.random()<0.05){
+     log('⚠ '+(opts.reason||'一笔意外之财')+' 竟落空（天命难测，仅得虚数）');
+     return 0;
+   }
+   if(type==='tribute'){ gain=Math.min(gain,50); } // 献宝单次上限 50 万两
+   if(type==='trade'){
+     const fails=safe(S._tradeFailStreak,0);
+     if(fails>=2||opts.guaranteed){ // 连续2次失败→第3次必定成功
+       gain=Math.max(0,Math.round(amount)); S._tradeFailStreak=0;
+     }else{
+       const fprob=rf(0.30,0.40);
+       if(Math.random()<fprob){
+         const loss=ri(30,40); S._tradeFailStreak=fails+1; S.gold=Math.max(0,S.gold-loss);
+         log('💢 外贸失败，赔 '+loss+' 万两（连续失败 '+S._tradeFailStreak+' 次）');
+         toast('💢 外贸失败，赔 '+loss+' 万两');
+         return -loss;
+       }else{ S._tradeFailStreak=0; gain=Math.max(0,Math.round(amount)); }
+     }
+   }
+   // —— 每回合赚钱上限 250 万（累计；保底成功与失败赔付不计入上限占用）——
+   S._turnEarn=safe(S._turnEarn,0);
+   const remain=Math.max(0,250-S._turnEarn);
+   const finalGain=Math.min(gain,remain);
+   S._turnEarn+=Math.max(0,finalGain);
+   S.gold+=finalGain;
+   if(finalGain>0)log('💰 '+(opts.reason||'外财')+' 入库 '+finalGain+' 万两（本回合累计 '+Math.round(S._turnEarn)+'/250 万）');
+   return finalGain;
+ } else {
+   // 单机模式：原样入库，无风控
+   S.gold+=gain;
+   if(gain>0)log('💰 '+(opts.reason||'外财')+' 入库 '+gain+' 万两');
+   return gain;
+ }
+}
+
 function maybeEvent(){if(true){const evs=[
 
  {k:'祥瑞',t:'天降祥瑞',fn:()=>{const h=ri(2,8);S.heart=clamp(S.heart+h,0,S.heartCap);log('天降祥瑞，民忠+'+h+'。');return '瑞雪兆丰，万民称颂，民忠 +'+h;}},
@@ -2577,7 +2675,7 @@ function maybeEvent(){if(true){const evs=[
 
  {k:'民变',t:'民变突起',fn:()=>{eventRebellion('民变突起');return '苛政所迫，乱民啸聚，治安受损';}},
 
- {k:'人才',t:'番商献宝',fn:()=>{const g=ri(200,800);S.gold+=g;log('番商献宝，得'+fmt(g)+'万两。');return '市舶云集，奇珍充库，国库 +'+fmt(g)+' 万两';}}
+ {k:'人才',t:'番商献宝',fn:()=>{const g=grantWindfall(ri(20,50),'tribute',{reason:'番商献宝'});return g>0?'市舶云集，奇珍充库，国库 +'+fmt(g)+' 万两':'番商献宝落空（天命难测）';}}
 
  ];const e=pick(evs);const desc=e.fn();toast(e.t);eventBroadcast(e.k,e.t,desc);}}
 
@@ -3437,6 +3535,10 @@ function showBattlePanel(from,to){
 
  h+='<p>攻城策略：<select id="bt_strat"><option value="强攻">强攻（推进快·损耗大）</option><option value="围城">围城（推进慢·损耗小·可粮尽）</option><option value="离间">离间（中速·可劝降·耗国库）</option></select></p>';
 
+ const av=availableUnits();const defU=to.defUnit||'xuanjia';
+ h+='<p>出征兵种：<select id="bt_unit" onchange="updateUnitPreview()">'+av.map(u=>{const armed=(u.kind==='siege'&&S.engines[u.eng]);const countered=UNIT_COUNTER[u.id]&&UNIT_COUNTER[u.id].includes(defU);return '<option value="'+u.id+'"'+(u.id===(S.selUnit||'longxiang')?' selected':'')+'>'+u.nm+(armed?' ★装备':'')+(countered?'（克制✔）':'')+'</option>';}).join('')+'</select>　守方兵种：<b style="color:#ffcf6b">'+unitName(defU)+'</b></p>';
+ h+='<div id="bt_unit_preview" class="muted"></div>';
+
  const sgen=starAt(to.id);
 
  if(sgen)h+='<p style="color:#ff6b5a">🎖 守城名将 <b>'+sgen.nm+'</b>（统率'+sgen.lead+'·武力'+sgen.might+'）坐镇此城：城防大增，攻城将触发单挑/突围等专属事件，离间多半无效，总攻胜率-8%。</p>';
@@ -3447,15 +3549,27 @@ function showBattlePanel(from,to){
 
  h+='<button class="btn gold" onclick="beginSiege()">出征（消耗1行动点）</button>';
 
- showModal('调兵遣将·出征准备',h);
+ showModal('调兵遣将·出征准备',h);updateUnitPreview();
 
+}
+
+function updateUnitPreview(){
+ const el=document.getElementById('bt_unit');if(!el)return;
+ const u=unitById(el.value);const to=toNode;if(!u||!to)return;
+ const defU=to.defUnit||'xuanjia';
+ const armed=(u.kind==='siege'&&S.engines[u.eng]);
+ let tip='（基础兵种）';
+ if(UNIT_COUNTER[u.id]&&UNIT_COUNTER[u.id].includes(defU))tip='🔥 克制守方「'+unitName(defU)+'」，攻方优势 +20%~50%';
+ else if(UNIT_COUNTER[defU]&&UNIT_COUNTER[defU].includes(u.id))tip='💢 被守方「'+unitName(defU)+'」克制，战力 -25%~-50%';
+ if(armed)tip+='　★已装备'+ENGINES.find(e=>e.id===u.eng).nm+'，实力大增';
+ const pv=document.getElementById('bt_unit_preview');if(pv)pv.textContent=tip;
 }
 
 function beginSiege(){
 
  const from=fromNode,to=toNode;if(!from||!to){toast('请先选择出击城与敌城');return;}
 
- const amt=Math.floor(Number(document.getElementById('bt_amt').value)||0);const strat=document.getElementById('bt_strat').value;const gid=document.getElementById('bt_gen').value;
+ const amt=Math.floor(Number(document.getElementById('bt_amt').value)||0);const strat=document.getElementById('bt_strat').value;const gid=document.getElementById('bt_gen').value;const su=document.getElementById('bt_unit')?document.getElementById('bt_unit').value:null;if(su)S.selUnit=su;
 
  if(amt<1000){toast('至少投入1000兵');return;}if(amt>from.troop){toast('兵力超出城内部队');return;}
 
@@ -3467,7 +3581,7 @@ function beginSiege(){
 
  // 实时国战：所有出征（含中立城）一律走一次性结算 + 同步，绝不开启本地持久攻城战(S.siege)
  // —— 旧写法只在 to.owner==='opponent' 时走这里；打中立城会留一个永不同步的本地攻城状态 → 失同步
- if(S.realtimePvp){ attackCity(from.id,to.id,amt,strat==='围城'?'siege':'field'); return; }
+ if(S.realtimePvp){ attackCity(from.id,to.id,amt,strat==='围城'?'siege':'field',su); return; }
 
  const df=S.forces.find(f=>f.id===to.owner);const sgen=starAt(to.id);
 
@@ -3733,7 +3847,7 @@ const ENGINES=[
 
 function actEngine(){
 
- let h='<p class="muted">督造攻城器械：每次督造消耗 1 行动点 + 国库（每载入限 1 次），需多次督造方可落成，落成后永久生效。</p><div class="row" style="flex-wrap:wrap">';
+ let h='<p class="muted">督造攻城器械：开工后<b>每回合自动推进 20%~40%</b> 直至落成（开工消耗 1 行动点 + 国库一次），落成永久生效并解锁对应特种兵种。</p><div class="row" style="flex-wrap:wrap">';
 
  ENGINES.forEach(e=>{const got=S.engines[e.id];const cur=(S.engRes&&S.engRes.id===e.id);
 
@@ -3741,15 +3855,15 @@ function actEngine(){
 
  h+='<p class="muted" style="font-size:12px">'+e.desc+'</p>';
 
- h+='<p class="muted" style="font-size:12px">造价 '+e.cost+' 万两/次 · 共需 '+e.turns+' 次督造</p>';
+ h+='<p class="muted" style="font-size:12px">造价 '+e.cost+' 万两（开工一次付清）· 每回合自动推进 20%~40%</p>';
 
  if(cur){const _pg=clamp(safe(S.engRes.prog,0),0,100);const _step=Math.ceil(100/e.turns); // 第十三轮修复：可视进度条（旧版仅一行文字，且督造后直接关窗，玩家以为进度没变）
 
  h+='<div style="background:#0006;border:1px solid var(--line);border-radius:5px;height:14px;overflow:hidden;margin:4px 0"><div style="height:100%;width:'+_pg+'%;background:linear-gradient(90deg,#e85d4a,#d4af37);transition:.3s"></div></div>';
 
- h+='<p class="gold2" style="font-size:12px">督造进度 '+Math.round(_pg)+'%（第 '+Math.min(e.turns,Math.ceil(_pg/_step))+'/'+e.turns+' 次，每载入限督造1次）</p>';}
+ h+='<p class="gold2" style="font-size:12px">自动督造进度 '+Math.round(_pg)+'%（每回合 +20%~40%，落成解锁兵种）</p>';}
 
- h+=(got||cur)?'':'<button class="btn sm" onclick="doEngine(\''+e.id+'\')">开始/继续督造</button>';
+ h+=(got?'':(cur?'<p class="gold2" style="font-size:12px">⚙ 自动督造中…每回合推进 20%~40%</p>':'<button class="btn sm" onclick="doEngine(\''+e.id+'\')">开始督造</button>'));
 
  h+='</div>';});
 
@@ -3761,27 +3875,23 @@ function doEngine(id){const e=ENGINES.find(x=>x.id===id);if(!e)return;
 
  if(S.engines[id]){toast(e.nm+' 已装备');return;}
 
- if(!S.engRes)S.engRes={id:id,prog:0};
+ if(S.engRes&&S.engRes.id!==id){const cur=ENGINES.find(x=>x.id===S.engRes.id);toast('先完成当前「'+(cur?cur.nm:'?')+'」的督造（进度'+Math.round(S.engRes.prog)+'%）');return;}
 
- if(S.engRes.id!==id){const cur=ENGINES.find(x=>x.id===S.engRes.id);toast('先完成当前「'+(cur?cur.nm:'?')+'」的督造（进度'+Math.round(S.engRes.prog)+'%）');return;}
+ if(S.engRes&&S.engRes.id===id){toast(e.nm+' 已在自动督造中（进度'+Math.round(S.engRes.prog)+'%），每回合自动推进 20%~40%');return;}
 
  if(!beginAct('engine',e.cost))return;S.gold-=e.cost;
 
- S.engRes.prog=clamp(safe(S.engRes.prog,0)+Math.ceil(100/e.turns),0,100);
+ S.engRes={id:id,prog:0};
 
- if(S.engRes.prog>=100){S.engines[id]=1;S.engRes=null;
+ const u=UNIT_TYPES.find(u=>u.eng===id);
 
- log('🛠 '+e.nm+' 督造完成！'+e.desc);
+ log('🛠 开工督造 '+e.nm+'（每回合自动推进 20%~40%）');
 
- report('工部·器械落成',[['获得',e.nm],['效果',e.desc]]);
+ eventBroadcast('工造','开工督造'+e.nm,e.icon+' '+e.nm+' 已开工，每回合自动推进 20%~40%，落成后解锁兵种「'+(u?u.nm:'')+'」');
 
- eventBroadcast('工造',e.nm+'落成',e.icon+' 攻城器械「'+e.nm+'」督造完成：'+e.desc);
+ toast('🛠 '+e.nm+' 开工督造！每回合自动推进 20%~40%');
 
- }else{report('工部·督造'+e.nm,[['进度',S.engRes.prog+'%'],['国库(万两)',-e.cost]]);
-
- toast('🔨 '+e.nm+' 督造中 '+Math.round(S.engRes.prog)+'%（还需 '+Math.ceil((100-S.engRes.prog)/Math.ceil(100/e.turns))+' 次）');}
-
- closeModal();renderAll();actEngine(); // 第十三轮修复：督造后立刻重开面板，让玩家看到进度条确实在推进（旧版直接关窗，体感"进度一直没变"）
+ closeModal();renderAll();actEngine();
 
 }
 
@@ -4445,9 +4555,16 @@ function doGarrison(id){const gid=document.getElementById('gs_gen').value;
 
  closeModal();renderAll();}
 
-function openBatchRecruit(){ let h='<p>批量征兵（每城征相同数量，单兵约35两，消耗1行动点，每载入限1次）：</p><p>每城征兵：<input id="br_amt" type="number" value="2000" style="width:120px"></p><div class="muted" id="br_info"></div><button class="btn gold" onclick="doBatchRecruit()">确认征兵</button>';showModal('批量征兵',h);setTimeout(()=>{const el=document.getElementById('br_info');if(el){const c=S.nodes.filter(n=>n.owner==='me').length;el.textContent='己方城池 '+c+' 座｜示例：每城2000兵，'+c+'城共约 '+Math.round(2000*c*0.0035)+' 万两';}},30);}
+function openBatchRecruit(){const cities=S.nodes.filter(n=>n.owner==='me').length;const pvp=!!(S&&S.realtimePvp);const maxAfford=(S.gold<=0?0:Math.floor(S.gold*(pvp?0.4:1)/0.0035/Math.max(1,cities)));let h='<p>批量征兵（每城征相同数量，单兵约35两，消耗1行动点，每载入限1次）：</p><p>每城征兵：<input id="br_amt" type="number" value="'+(Math.min(2000,maxAfford)||0)+'" style="width:120px"></p><div class="muted" id="br_info"></div><button class="btn gold" onclick="doBatchRecruit()">确认征兵</button>';showModal('批量征兵',h);setTimeout(()=>{const el=document.getElementById('br_info');if(el){const c=cities;el.textContent= pvp ? ('国库 '+Math.round(S.gold)+' 万两｜单次最多花 40%='+Math.round(S.gold*0.4)+' 万两｜每城最多约 '+fmt(maxAfford)+' 兵（共 '+c+' 城）') : ('国库 '+Math.round(S.gold)+' 万两｜每城最多约 '+fmt(maxAfford)+' 兵（共 '+c+' 城）');}},30);}
 
-function doBatchRecruit(){if(used('batchrec')){toast('本载入已批量征兵');return;}const amt=Math.max(0,Math.floor(Number(document.getElementById('br_amt').value)||0));const cities=S.nodes.filter(n=>n.owner==='me');const total=amt*cities.length;const k=Math.round(total*0.0035); // 第十三轮：征兵改为真实扣款后，单价 0.0065→0.0035 万两/兵（单兵35两）——按"征兵免费"校准的第12轮经济参数需补偿，否则结构性赤字if(total<=0){toast('请输入数量');return;}if(!beginAct('batchrec',k))return;
+function doBatchRecruit(){if(used('batchrec')){toast('本载入已批量征兵');return;}const amt=Math.max(0,Math.floor(Number(document.getElementById('br_amt').value)||0));const cities=S.nodes.filter(n=>n.owner==='me');const total=amt*cities.length;const k=Math.round(total*0.0035); // 第十三轮：征兵改为真实扣款后，单价 0.0065→0.0035 万两/兵（单兵35两）——按"征兵免费"校准的第12轮经济参数需补偿，否则结构性赤字 if(total<=0){toast('请输入数量');return;}
+ const pvp=!!(S&&S.realtimePvp);
+ if(pvp){
+   if(S.gold<=0){toast('⚠ 国库空虚（'+Math.round(S.gold)+' 万两），无力征兵');return;}
+   const maxAfford=Math.floor(S.gold*0.4/0.0035/Math.max(1,cities.length));
+   if(amt>maxAfford){toast('⚠ 本次需 '+fmt(k)+' 万两，超过国库40%上限（最多每城征 '+fmt(maxAfford)+' 兵）');return;}
+ }
+ if(!beginAct('batchrec',k))return;
 
  S.gold-=k; // 第十三轮修复：征兵必须真正扣国库（旧版只调 beginAct 校验、未执行扣款，导致"钱够就能征、征完钱还在"）
 
@@ -4679,7 +4796,7 @@ function migrateS(){if(!S)return;
 
  trades:[],vassals:[],haremPeace:100,siege:null,cashIssueTurns:0,lastIssue:-99,
 
- engines:{},engRes:null,starGens:[],defend:null,season:null,
+ engines:{},engRes:null,starGens:[],defend:null,season:null,selUnit:'longxiang',_tradeFailStreak:0,_turnEarn:0,
 
  garrison:{},nirvana:false,deathCause:null,firstDeathShare:false,tutDone:0,
 
@@ -5040,9 +5157,10 @@ const DE_PVP = {
  send(obj){ if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(obj)); },
  // 发起对好友城的攻击：记录待决攻击，若守方超时未回传（对方还没进主局/掉线/丢包），
  // 攻方本地兜底结算并广播结果 —— 保证攻城指令永远不会"石沉大海"（真机"点了没反应"的根治手段）
- sendAttack(fromId,toId,troops,mode){
-  this.pendingAttack={fromId,toId,troops,mode};
-  this.send({type:'attack',fromId,toId,troops,mode});
+ sendAttack(fromId,toId,troops,mode,unit){
+  const bonus=unitWeaponBonus(unit);
+  this.pendingAttack={fromId,toId,troops,mode,unit,bonus};
+  this.send({type:'attack',fromId,toId,troops,mode,unit,bonus});
   if(this.atkFallbackTimer)clearTimeout(this.atkFallbackTimer);
   this.atkFallbackTimer=setTimeout(()=>{
    if(!this.pendingAttack)return;
@@ -5050,7 +5168,7 @@ const DE_PVP = {
    if(!S||!S.realtimePvp)return;
    toast('⚠ 对手未响应，已按本地图鉴结算');
    try{
-    resolveBattle('me',pa.fromId,pa.toId,pa.mode||'field',pa.troops);
+    resolveBattle('me',pa.fromId,pa.toId,pa.mode||'field',pa.troops,null,{unit:pa.unit,bonus:pa.bonus});
     if(typeof pushBattleResult==='function')pushBattleResult([pa.fromId,pa.toId]);
    }catch(e){}
   },4000);
@@ -5061,7 +5179,7 @@ const DE_PVP = {
   // 注意：不再校验 to.owner==='me'。若因偶发失同步导致本地归属对不上就 return，
   // 攻方的指令会被静默丢弃、永远收不到回传 —— 这正是"好友端/房主端不能进攻"的现象。
   // 改为无论如何都结算并回传真实结果，delta 会顺带把这两座城重新对齐。
-  resolveBattle('opponent',msg.fromId,msg.toId,msg.mode||'field',msg.troops);
+  resolveBattle('opponent',msg.fromId,msg.toId,msg.mode||'field',msg.troops,null,{unit:msg.unit,bonus:msg.bonus});
   pushBattleResult([msg.fromId,msg.toId]);
  },
  onBattleResult(msg){
@@ -5551,7 +5669,7 @@ function buildPvpChronBlock() {
   const rows = [['国库','gold'],['民心','heart'],['粮食','food'],['兵力','military'],['文化','culture'],['声望','rep']];
   let h = '<div class="card3" style="margin-top:10px">';
   h += '<p class="h">⚔ 对战胜利条件</p>';
-  h += '<p class="muted" style="line-height:1.7">共 <b style="color:var(--gold2)">' + ((typeof DE_PVP!=='undefined'&&DE_PVP.totalTurns)||20) + '</b> 回合，每回合 60 秒。每回合结束比拼国力，<b style="color:var(--gold2)">20 回合后国力高者获胜</b>。断线或超时未结束回合者判负。</p>';
+  h += '<p class="muted" style="line-height:1.7">共 <b style="color:var(--gold2)">' + ((typeof DE_PVP!=='undefined'&&DE_PVP.totalTurns)||20) + '</b> 回合，每回合 150 秒。每回合结束比拼国力，<b style="color:var(--gold2)">20 回合后国力高者获胜</b>。断线或超时未结束回合者判负。</p>';
   h += '</div>';
   h += '<div class="card3" style="margin-top:10px"><p class="h">📊 双方国力对比　<span class="muted">第 ' + ((typeof DE_PVP!=='undefined'&&DE_PVP.turn)||1) + ' 回合</span></p>';
   h += '<div style="display:flex;justify-content:space-around;align-items:center;margin:8px 0">';
